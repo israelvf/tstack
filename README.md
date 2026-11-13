@@ -1,18 +1,17 @@
 # tstack
 
 The agent skills I use every day, cleaned up so anyone can use them. They work
-in Claude Code and Codex. Some use [T3 Code](https://github.com/pingdotgg/t3code)
-features when they are available and fall back to native tools when they are
-not.
+in Claude Code, Codex, OpenCode and Antigravity CLI. These Herdr adaptations use
+existing `hc` sessions and do not require T3 Code.
 
 ## Skills
 
 | Skill | Say | What it does |
 |---|---|---|
 | `full-send` | "full send" | Takes a change to a merged PR with nobody watching: proves it, reviews it, files it, babysits it, merges it. |
-| `full-stop` | "full stop" | Same as `full-send`, but stops when the PR is ready for you to merge. |
-| `council` | "council" | Gets review from three models from different providers, and loops until they agree. |
-| `sol-loop` | "sol loop" | Reviews a change with GPT Sol in a loop until both agents agree. |
+| `full-stop` | Explicit `/full-stop` invocation | Proves, reviews, files and monitors a PR, then leaves merge to you. Does not call `full-send`. |
+| `council` | Explicit "council" request | On-demand independent Herdr review by Sol, Opus 5.5 and Argon High; two rounds by default. |
+| `sol-loop` | Explicit "sol-loop" request | One Codex GPT-6.1 Sol reviewer at a time; three rounds by default. |
 | `file-pr` | "file a PR" | Files a short PR that leads with the problem, not an inventory of changes. |
 | `takeover` | "take over" | Finishes someone else's PR, branch, or agent thread, and keeps their credit. |
 | `babysit-pr` | "babysit" | Watches a PR through CI and review bots, and fixes the real findings. |
@@ -22,31 +21,36 @@ not.
 Some skills call others. Install the ones they need too:
 
 - `full-send` uses `sol-loop`, `file-pr`, and `babysit-pr`.
-- `full-stop` uses `full-send`.
+- `full-stop` uses `sol-loop`, `file-pr`, `babysit-pr`, and `leaving-pr-comments`; it does not use `full-send`.
 - `takeover` uses `modernize`, `file-pr`, `babysit-pr`, and `leaving-pr-comments`.
 - `file-pr`, `babysit-pr`, and `modernize` use `leaving-pr-comments`.
 
 ## Install
 
 ```bash
-git clone https://github.com/t3dotgg/tstack
+# Review existing skill files before copying. Harness roots and the
+# Herdr-specific role setup are documented in docs/herdr-workflow.md.
+git clone https://github.com/israelvf/tstack
 cp -R tstack/skills/* ~/.claude/skills/   # Claude Code
 cp -R tstack/skills/* ~/.codex/skills/    # Codex
+cp -R tstack/skills/* ~/.config/opencode/skills/  # OpenCode
+cp -R tstack/skills/* ~/.gemini/antigravity/skills/ # agy
 ```
 
 ## Requirements
 
 - An authenticated [GitHub CLI](https://cli.github.com) (`gh`).
 - `python3` for `babysit-pr`'s `pr-wait` script.
-- `council` and `sol-loop` need subagents on other providers' models. T3 Code
-  does this with `delegate_task`. Otherwise you need a harness that can run
-  those models.
+- `council` and `sol-loop` use existing Herdr sessions with the exact requested
+  role and model. Missing sessions are reported; no model is substituted.
+- The OpenCode/Herdr workflows, local message log, native app panel, model
+  configuration and install paths are documented in [docs/herdr-workflow.md](docs/herdr-workflow.md).
 
 ## Make them yours
 
-These are starting points. Edit them. Put personal settings, like which models
-sit on your council, in your `CLAUDE.md` or `AGENTS.md`, so you can update the
-skills without losing them.
+These are starting points. Edit them. Keep personal model choices in
+`~/.config/tstack-herdr/roles.json` (outside the repository), so updates do not
+overwrite them. See [the Herdr workflow guide](docs/herdr-workflow.md).
 
 ## License
 

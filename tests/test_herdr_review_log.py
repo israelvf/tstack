@@ -1,0 +1,75 @@
+import json
+import tempfile
+import unittest
+import uuid
+from pathlib import Path
+
+from scripts.herdr_review_log import append, validate
+
+
+def message(event_id=None):
+    return {
+        "event_id": event_id or str(uuid.uuid4()),
+        "kind": "message",
+        "direction": "outgoing",
+        "conversation_id": str(uuid.uuid4()),
+        "round": 1,
+        "sender": "OpenCode implementer",
+        "recipient": "Codex GPT-6.1 Sol",
+        "sender_model": "GPT-6 Luna",
+        "recipient_model": "GPT-6.1 Sol",
+        "source_session": "t1x",
+        "destination_session": "t2x",
+        "repo": "israelvf/tstack",
+        "worktree": "/tmp/tstack-review",
+        "base_sha": "a" * 40,
+        "head_sha": "b" * 40,
+        "criteria": ["A behavior is correct"],
+        "evidence": ["focused test passes"],
+        "text": "Review only; do not edit files.",
+        "created_at": "2026-11-13T12:00:00Z",
+        "status": "pending",
+    }
+
+
+class ReviewLogTests(unittest.TestCase):
+    def test_append_is_private_and_duplicate_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "messages.jsonl"
+            record = message()
+            append(path, record)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(json.loads(path.read_text())["event_id"], record["event_id"])
+            with self.assertRaisesRegex(ValueError, "duplicate event_id"):
+                append(path, record)
+
+    def test_schema_rejects_unfiltered_tool_data(self):
+        record = message()
+        record["tool_output"] = "must never be logged"
+        with self.assertRaisesRegex(ValueError, "extra"):
+            validate(record)
+
+    def test_delivery_keeps_only_the_hc_receipt_fields(self):
+        record = message()
+        record.update({
+            "kind": "delivery",
+            "related_event_id": record["event_id"],
+            "created_at": "2026-11-13T12:00:01Z",
+            "status": "sent",
+            "receipt": {"started": True, "status": "idle", "turn": 4},
+        })
+        record.pop("direction")
+        record.pop("text")
+        validate(record)
+        record["receipt"]["output"] = "not an hc receipt field"
+        with self.assertRaisesRegex(ValueError, "receipt may contain only"):
+            validate(record)
+
+    def test_log_path_inside_repo_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "outside Git"):
+            append(Path(__file__).resolve(), message())
+
+
+if __name__ == "__main__":
+    unittest.main()

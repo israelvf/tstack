@@ -1,62 +1,90 @@
 ---
 name: council
-description: Trigger this if the user says 'council'.
+description: Use only when the user explicitly invokes council or requests its independent three-reviewer audit.
 ---
 
 # Council
 
-Before an audit, address outstanding PR comments, fix known issues, and run
-relevant checks. Give council the updated implementation; do not defer known
-fixes until reviews return. If the user wants to discard the implementation
-and explore new ideas, skip fixes to code being replaced.
+This is an on-demand, read-only review flow. OpenCode implements and verifies;
+the council only reviews. Use Herdr `hc` sessions and the local
+`herdr-messaging` skill. Do not use T3 delegates, launch CLI one-shots, or
+substitute another model.
 
-Bring in three delegates to help with the user's request, usually for review
-or feedback. Use one strong model from each of three different providers, at
-high reasoning effort. If the user's instructions name council members, use
-those. Otherwise pick the latest flagship model from each provider, for
-example Claude Opus, GPT Sol, and Gemini Pro.
+## Fixed members
 
-In T3 Code, use `orchestrator_capabilities` to resolve the models, then
-`delegate_task` to start one delegate per model in parallel. Elsewhere, use
-the harness's subagent tools. If you cannot reach three providers, or a named
-member is unavailable, report it instead of substituting.
+Resolve one existing Herdr session for each member, matching repository,
+project/worktree, role and confirmed model:
 
-Give each delegate the request and relevant context. For review or feedback,
-keep their work read-only. Collect their responses and summarize the useful
-findings, disagreements, and recommended next steps.
+1. Codex — GPT-6.1 Sol.
+2. Claude Code — Claude Opus 5.5.
+3. Antigravity CLI (`agy`) — Gemini 4 Argon High.
 
-Do not wait idle. When a result arrives, check its findings against the code
-at once and decide what to fix while the other delegates run. Do not edit
-files while a delegate still reviews the same checkout. If the user's
-instructions mark a delegate as non-blocking, do not wait for it; treat a
-late result as feedback and do not record its score.
+The local preference/config file is `~/.config/tstack-herdr/roles.json`. It is
+personal and must remain outside Git. A catalog entry or installed CLI does not
+prove an active Herdr session. Use `hc ls --json`, then inspect only matching
+terminals with `hc get` and `hc read --lines 0`. If any member is absent,
+ambiguous, blocked, or running another model, record that member unavailable;
+do not silently replace them. Continue only with members that can be verified,
+and never describe a partial council as unanimous or complete.
 
-For a code review, ask each delegate for a score out of 10.
-Count each full review pass as one round.
-A fresh review after fixes starts a new round.
+## Snapshot and independence
 
-If the work ends in a pull request, put the results in the PR description.
-Put this section before the model and harness line at the end:
+Before requesting reviews, resolve the task, acceptance criteria, repository,
+exact worktree, `base_sha` and immutable `head_sha` (full commit IDs). Stop if
+the worktree is changing or contains an ambiguous/uncommitted snapshot. Confirm
+effective read-only permissions for every selected session. Use a
+read-only review checkout detached at the exact head when available; a separate
+worktree alone is not a security boundary. If an existing session cannot be
+shown to be read-only, mark that member unavailable rather than relying on the
+prompt.
 
-```markdown
-## Council review
+Create one `conversation_id` for the council. The first-round requests must be
+the same snapshot, criteria and evidence, sent independently. Do not include
+another reviewer's findings or verdict. A reviewer may not edit, commit, push,
+comment, merge, or start another reviewer. Send to selected members only.
 
-Rounds: 2
+Each request and response must carry:
 
-| Delegate | Round 1 | Round 2 |
-| --- | --- | --- |
-| Claude Opus | 7/10 | 9/10 |
-| GPT Sol | 8/10 | 10/10 |
-| Gemini Pro | 7/10 | 9/10 |
-```
+- `conversation_id`, `round`, sender and destination/session address;
+- repository and absolute worktree path;
+- full base/head SHA;
+- acceptance criteria and concise proof/evidence summary;
+- clean message text, without tool calls or raw tool output.
 
-If a delegate gives no score, write `no score`. Do not invent one.
-If the PR is open, edit the description. Do not post a comment for this.
-If there is no PR, put the same results in the final reply only.
+Findings must include stable ID, severity, `file:line`, impact, a concrete
+failure scenario, reproduction/evidence, and the smallest suggested action.
+Use `APPROVE`, `CHANGES_REQUESTED` or `INCONCLUSIVE`. Scores are optional and
+never votes.
 
-If you agree with their recommendations, make the changes and request a fresh
-review after. Continue this process until all delegates are satisfied with the
-outcome.
+Before each `hc send`, append the exact outgoing message locally with
+`python3 scripts/herdr_review_log.py append`. Preserve `hc`'s receipt as a
+delivery record. For an uncertain delivery, inspect the same session before any
+retry; never auto-resend. Log timeout, blocked/error, unavailable member and
+stale-SHA outcomes explicitly. A stale review is not approval of the current
+head.
 
-Do not let repeated reviews result in scope creep. It is your job to fight to
-keep scope limited.
+## Findings and rounds
+
+Round 1: send the same independent request to every available member before
+reading or sharing any first opinion. Gather replies with `hc wait`/`hc read`;
+correlate each to the conversation, round and SHA. Do not edit the snapshot
+during review. The OpenCode implementer verifies findings and records
+`FIXED`, `DECLINED`, `OPEN` or `NOT_VERIFIED`, with evidence and a reason for
+every disposition. One proven blocker can block regardless of favorable
+opinions from other members.
+
+Default budget: at most two rounds. Round 2 is only for the new diff and open
+findings, with the same base and a new full `head_sha`. Ask before any extra
+round. Do not restart the full review for nits or unrelated suggestions.
+Re-run applicable checks after corrections before reporting.
+
+## Outcome
+
+Report each configured member separately: exact session/model, reviewed SHA,
+rounds, verdict, findings and receipt/status. Distinguish unavailable,
+timed-out, blocked, stale-SHA and reviewed. `APPROVED` means all available
+reviews cover the current head, no confirmed blocker remains open, checks pass,
+and the implementer has no unresolved correctness concern. Missing members,
+open proven defects or exhausted budget without resolution mean `BLOCKED` or
+`INCONCLUSIVE`, not approval. Council is advisory; it does not authorize a PR
+or merge.
