@@ -32,10 +32,26 @@ const stamp = (value) => {
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString();
 };
 
+function conversationMessages(messages) {
+  const bubbles = new Map();
+  for (const message of messages) {
+    // Older broadcasts have one record per recipient and no shared message ID.
+    const identity = message.group_message_id
+      ?? (message.direction === "outgoing" ? message.text : message.event_id);
+    const key = JSON.stringify([
+      message.conversation_id, message.round, message.head_sha,
+      message.source_session, message.direction, identity,
+    ]);
+    if (!bubbles.has(key)) bubbles.set(key, { ...message, copies: [] });
+    bubbles.get(key).copies.push(message);
+  }
+  return [...bubbles.values()];
+}
+
 function grouped(messages) {
   const groups = new Map();
-  for (const message of messages) {
-    const key = `${message.conversation_id}:${message.round}`;
+  for (const message of conversationMessages(messages)) {
+    const key = `${message.conversation_id}:${message.round}:${message.head_sha}`;
     if (!groups.has(key)) groups.set(key, { id: key, conversation: message.conversation_id, round: message.round, repo: message.repo, worktree: message.worktree, head: message.head_sha, messages: [] });
     groups.get(key).messages.push(message);
   }
@@ -58,24 +74,11 @@ export default class TStackReviews extends View {
     this.loading = true;
     try {
       const read = await exec("tail", ["-c", LIMIT_BYTES, this.path], { timeout: 5000 });
-      if (read.code !== 0) {
-        const fallback = await readTextFile(this.path);
-        if (fallback == null) {
-          this.messages = [];
-          this.deliveries = new Map();
-          this.status = EMPTY_LOG;
-        } else {
-          const parsed = parseLog(fallback);
-          this.messages = parsed.messages;
-          this.deliveries = parsed.deliveries;
-          this.status = EMPTY_LOG;
-        }
-      } else {
-        const parsed = parseLog(read.stdout);
-        this.messages = parsed.messages;
-        this.deliveries = parsed.deliveries;
-        this.status = EMPTY_LOG;
-      }
+      const raw = read.code === 0 ? read.stdout : await readTextFile(this.path);
+      const parsed = parseLog(raw);
+      this.messages = parsed.messages;
+      this.deliveries = parsed.deliveries;
+      this.status = parsed.messages.length ? "" : EMPTY_LOG;
     } catch (error) {
       this.status = `Could not read the local log: ${String(error?.message ?? error)}`;
     } finally {
@@ -86,21 +89,25 @@ export default class TStackReviews extends View {
 
   bubble(message, t, available) {
     const outgoing = message.direction === "outgoing";
-    const delivery = this.deliveries.get(message.event_id);
     const author = message.sender;
-    const destination = message.recipient;
+    const recipients = [...new Set(message.copies.map((copy) => copy.recipient))];
+    const groupMessage = recipients.length > 1 || Boolean(message.group_message_id);
+    const delivery = outgoing ? message.copies.map((copy) =>
+      `${copy.recipient}: ${this.deliveries.get(copy.event_id)?.status ?? "pending"}`
+    ) : [];
     const open = () => run("terminal.peek", { terminal: message.source_session });
     const side = h_flex().w_full().when(outgoing, (el) => el.justify_end());
     const card = v_flex().max_w(760).min_w(0).gap(8).px(14).py(12).rounded(12)
       .bg(outgoing ? t.raised : t.chrome).border(1).border_color(t.border)
       .child(h_flex().w_full().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(12.5).text_color(t.foreground).child(author))
-        .child(div().max_w(120).truncate().text_size(11.5).text_color(t.dim).child(`to ${destination}`)))
+        .when(groupMessage, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Group"))))
       .child(div().text_size(11).text_color(t.dim).child(stamp(message.created_at)))
       .child(TextView.markdown(`review-${message.event_id}`, message.text).selectable(true))
+      .when(outgoing, (el) => el.child(v_flex().gap(2).children(delivery.map((status) =>
+        div().text_size(10.5).text_color(t.muted).child(status)))))
       .child(h_flex().w_full().gap(8).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim)
-          .child(delivery ? `Delivery: ${delivery.status}${delivery.receipt?.turn ? ` · turn ${delivery.receipt.turn}` : ""}` : outgoing ? "Delivery: pending" : `Session: ${message.source_session}`))
+        .justify_end()
         .when(available, (el) => el.child(div().px(9).py(4).rounded(7).cursor_pointer().bg(t.surface).text_size(11).text_color(t.accent)
           .on_click(open).child("Open source session")))
         .when(!available, (el) => el.child(div().text_size(11).text_color(t.dim).child("Source session not live"))));
@@ -128,7 +135,7 @@ export default class TStackReviews extends View {
           .on_click((_event, cx) => cx.spawn((cx) => this.refresh(cx))).child("Refresh")))
       .child(v_flex().flex_1().min_h(0).min_w(0).overflow_y_scroll().gap(18).px(12).py(14)
         .when(groups.length > 0, (el) => el.children(groups.map((group) => this.groupView(group, t, live))))
-        .when(groups.length === 0, (el) => el.justify_center().child(div().w_full().text_size(13).text_color(t.muted).child(this.status))));
+        .when(Boolean(this.status), (el) => el.child(div().w_full().text_size(13).text_color(t.muted).child(this.status))));
   }
 }
 

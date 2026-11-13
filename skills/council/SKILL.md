@@ -1,6 +1,6 @@
 ---
 name: council
-description: Use only when the user explicitly invokes council or requests its independent three-reviewer audit.
+description: Use only when the user explicitly invokes council or requests its independent Sol and Opus audit.
 ---
 
 # Council
@@ -18,7 +18,9 @@ confirmed model, snapshot access and effective read-only mode:
 
 1. Codex — GPT-6.1 Sol.
 2. Claude Code — Claude Opus 5.5.
-3. Antigravity CLI (`agy`) — Gemini 4 Argon High.
+
+Antigravity is outside the default council: its interactive plan mode can
+pause at “Approve plan” instead of returning a final review.
 
 The local preference/config file is `~/.config/tstack-herdr/roles.json`. It is
 personal and must remain outside Git. A catalog entry or installed CLI does not
@@ -65,19 +67,33 @@ failure scenario, reproduction/evidence, and the smallest suggested action.
 Use `APPROVE`, `CHANGES_REQUESTED` or `INCONCLUSIVE`. Scores are optional and
 never votes.
 
-Before each `hc send`, append the exact outgoing message locally with
-`python3 scripts/herdr_review_log.py append`. Preserve `hc`'s receipt as a
-delivery record. For an uncertain delivery, inspect the same session before any
-retry; never auto-resend. Log timeout, blocked/error, unavailable member and
-stale-SHA outcomes explicitly. A stale review is not approval of the current
-head.
+Use one logical group message for the brief. Before each `hc send`, append a
+per-recipient record with the same `group_message_id` (one new UUID for the
+brief), identical clean text and a distinct `event_id`. Keep recipient-specific
+routing outside the clean text. Preserve each `hc` receipt against its own
+`event_id`. For uncertain delivery, inspect that session before any retry.
+Log timeout, blocked/error, unavailable member and stale-SHA outcomes explicitly.
 
 ## Findings and rounds
 
-Round 1: send the same independent request to every available member before
-reading or sharing any first opinion. Gather replies with `hc wait`/`hc read`;
-correlate each to the conversation, round and SHA. Do not edit the snapshot
-during review. The OpenCode implementer verifies findings and records
+Send the same request to all eligible reviewers independently. Monitor their
+sessions concurrently: use separate bounded `hc wait` calls, or
+`hc events --label` for the conversation, and read the relevant session as
+soon as its turn finishes. Process whichever completes first. Correlate the
+final reply to the conversation, round and SHA and append it immediately as
+one `incoming` group message, before waiting on any other reviewer or
+verifying findings. Mark a permission prompt or plan artifact as blocked,
+without recording it as a final review.
+
+When all reviewers have replied or reached a terminal outcome for the round,
+relay each final review once to the other available reviewer as group context,
+preserving the original author and marking it as shared context with no reply
+requested. The reply is already visible in Reviews, so these forwards must not
+create new message bubbles. Do not echo a review to its author or start
+another round on receipt. Until the round closes, keep each reviewer's
+terminal independent. Do not edit the snapshot during review.
+
+The OpenCode implementer verifies findings and records
 `FIXED`, `DECLINED`, `OPEN` or `NOT_VERIFIED`, with evidence and a reason for
 every disposition. One proven blocker can block regardless of favorable
 opinions from other members.

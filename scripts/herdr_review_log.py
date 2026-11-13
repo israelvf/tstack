@@ -42,15 +42,18 @@ def validate(record):
     expected = MESSAGE_FIELDS if kind == "message" else DELIVERY_FIELDS if kind == "delivery" else None
     if expected is None:
         raise ValueError("kind must be message or delivery")
-    extra = set(record) - expected
+    optional = {"group_message_id"} if kind == "message" else set()
+    extra = set(record) - expected - optional
     missing = expected - set(record)
     if extra or missing:
         raise ValueError(f"invalid fields (missing={sorted(missing)}, extra={sorted(extra)})")
     try:
         uuid.UUID(record["event_id"])
         uuid.UUID(record["conversation_id"])
+        if "group_message_id" in record:
+            uuid.UUID(record["group_message_id"])
     except (ValueError, TypeError, AttributeError) as exc:
-        raise ValueError("event_id and conversation_id must be UUIDs") from exc
+        raise ValueError("event_id, conversation_id and group_message_id must be UUIDs") from exc
     if not isinstance(record["round"], int) or record["round"] < 1:
         raise ValueError("round must be a positive integer")
     for field in ("sender", "recipient", "source_session", "destination_session", "repo", "worktree"):

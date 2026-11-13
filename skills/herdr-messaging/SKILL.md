@@ -233,8 +233,8 @@ própria evidência. Um defeito comprovado pode bloquear apesar de outros
 pareceres favoráveis.
 
 `sol-loop`: um revisor por vez, sessão Codex GPT-6.1 Sol, orçamento padrão de
-três rodadas. `council`: Sol, Claude Code Claude Opus 5.5 e Antigravity CLI
-Gemini 4 Argon High, sem substituições, até duas rodadas por padrão. A segunda
+três rodadas. `council`: Sol e Claude Opus 5.5, sem substituições,
+até duas rodadas por padrão. A segunda
 rodada é somente o diff novo e os findings abertos. Timeout, bloqueio,
 indisponibilidade e SHA antigo têm status explícito e nunca contam como
 aprovação. Consulte as skills para o orçamento e a decisão final.
@@ -266,6 +266,13 @@ ou `incoming`), `created_at` ISO-8601 e texto. Registre recibos em eventos
 `sent`, `uncertain`, `timeout`, `unavailable`, `blocked`, `stale_sha` ou `error`
 são literais, não inferências. O logger é append-only e recusa IDs de evento
 duplicados. Em entrega incerta, inspecione a sessão antes de qualquer reenvio.
+
+Para enviar ao grupo, use o mesmo `group_message_id` (UUID) em todas as
+cópias do mesmo texto, e um `event_id` distinto por destinatário para vincular
+o recibo. Use um novo ID de grupo para cada nova mensagem intencional.
+Cada parecer final recebe seu próprio ID de grupo e entra no log assim que
+chega. Encaminhamentos de um parecer que já está no painel não criam outro
+registro `message`; acompanhe os recibos desses encaminhamentos no coordenador.
 
 Para mensagens recebidas, copie somente o parecer final reconhecido na sessão,
 sem a saída de ferramentas que possa aparecer no histórico. O painel mostra os

@@ -43,8 +43,7 @@ afirmar que exista uma sessão TStack ativa:
   },
   "reviewers": {
     "sol": { "harness": "codex", "model": "gpt-6.1-sol" },
-    "opus": { "harness": "claude-code", "model": "claude-opus-5-5" },
-    "argon": { "harness": "agy", "model": "gemini-4-argon-high" }
+    "opus": { "harness": "claude-code", "model": "claude-opus-5-5" }
   }
 }
 ```
@@ -73,10 +72,14 @@ O conselho usa, sem substituição:
 
 1. Codex — GPT-6.1 Sol.
 2. Claude Code — Claude Opus 5.5.
-3. Antigravity CLI — Gemini 4 Argon High.
+
+O Antigravity fica fora do conselho padrão. No teste interativo, o modo
+`plan` apresentou “Approve plan” e ficou bloqueado antes do parecer final.
 
 O primeiro parecer de cada membro usa a mesma base, head, critérios e evidências
-e não recebe os pareceres dos outros. Os revisores são somente leitura. O
+e não recebe os pareceres dos outros. Cada resposta final aparece em Reviews
+assim que chega. Ao fechar a rodada, o coordenador encaminha os pareceres aos
+outros revisores como contexto do grupo. Os revisores são somente leitura. O
 OpenCode tem a worktree de edição. `council` admite duas rodadas por padrão; a
 segunda revisa apenas o diff novo e achados abertos. `sol-loop` usa um revisor
 por vez e tem três rodadas por padrão. Timeout, indisponibilidade, bloqueio ou
@@ -86,8 +89,8 @@ os demais aprovarem.
 ## Usar
 
 - Peça `sol-loop` explicitamente para a revisão por Sol.
-- Peça `council` explicitamente quando precisar de pareceres independentes dos
-  três provedores.
+- Peça `council` explicitamente quando precisar de pareceres independentes de
+  Sol e Opus.
 - Invoque **`/full-stop` explicitamente** para preparar uma mudança, prová-la,
   revisar, abrir/acompanhar uma PR e parar antes do merge. Uma frase de
   encerramento “full stop” não aciona a skill. `full-stop` não chama
@@ -122,8 +125,10 @@ limpo, não a tela bruta do terminal.
 
 `hc events` contém fatos de estado/turno e não é fonte de conteúdo de conversa.
 O mod não presume que esses eventos carreguem mensagens: lê apenas o JSONL
-local, agrupa por conversa/rodada e mostra balões com autor, destinatário,
-horário, status de entrega e ação para abrir a sessão de origem. O mod lê no
+local, agrupa por conversa/rodada e mostra um balão por mensagem, com autor,
+horário e ação para abrir a sessão de origem. Envios de grupo usam um mesmo
+`group_message_id` e exibem o status de entrega por destinatário no balão.
+O mod lê no
 máximo o último MiB e mostra até 180 mensagens recentes.
 
 O painel lateral é composto por `herdr-app/layouts/github-and-trunk-reviews.json`,
