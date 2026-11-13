@@ -118,14 +118,33 @@ local, agrupa por conversa/rodada e mostra balões com autor, destinatário,
 horário, status de entrega e ação para abrir a sessão de origem. O mod lê no
 máximo o último MiB e mostra até 180 mensagens recentes.
 
-Para instalar ou atualizar o mod no host, confira diferenças antes de
-substituir arquivos locais já editados:
+O painel lateral é composto por `herdr-app/layouts/github-and-trunk-reviews.json`,
+o mod `herdr-app/mods/tabs-with-reviews` (botão Reviews e restauração por
+espaço) e `herdr-app/mods/tstack-herdr-review` (mensagens). O layout referencia
+ícones nativos de Files, Changes, Chat e pane; somente os quatro SVGs de botões
+de janela do Windows pertencem ao mod de abas. O preview usa o SVG do layout
+nativo `github-and-trunk`.
+
+Para instalar/atualizar esses arquivos, confira diferenças antes de substituir
+versões pessoais. Isso não altera o layout selecionado; a troca para o layout
+personalizado é uma ação explícita separada:
 
 ```sh
+mkdir -p ~/.config/herdr-app/layouts
+cp herdr-app/layouts/github-and-trunk-reviews.json ~/.config/herdr-app/layouts/
+mkdir -p ~/.config/herdr-app/mods/tabs-with-reviews
+cp -R herdr-app/mods/tabs-with-reviews/. ~/.config/herdr-app/mods/tabs-with-reviews/
 mkdir -p ~/.config/herdr-app/mods/tstack-herdr-review
 cp -R herdr-app/mods/tstack-herdr-review/. ~/.config/herdr-app/mods/tstack-herdr-review/
+herdr-app check ~/.config/herdr-app/mods/tabs-with-reviews
 herdr-app check ~/.config/herdr-app/mods/tstack-herdr-review
 ```
+
+Depois de validar, escolha o layout manualmente com `herdr-app do layout.switch
+--name github-and-trunk-reviews`. Não substitua o `main`, o `github-and-trunk`
+original ou outros layouts padrão. No clone deste workflow, o layout ativo já
+permanece intacto; os arquivos de configuração pessoais não fazem parte do
+commit.
 
 Instale o logger se ainda não existir em `~/.local/bin` (ou atualize-o após
 revisar diferenças):
@@ -143,9 +162,9 @@ Cada mensagem é um registro `kind=message`; cada recibo é um registro
 conversa e snapshot é repetido para manter correlação. Não armazene a saída
 bruta do terminal.
 
-Herdr recarrega o mod quando seus arquivos mudam. Para abrir sem alterar o
-layout pessoal, use uma nova aba nativa do mod (`herdr-app commands` lista os
-argumentos da versão instalada):
+Herdr recarrega os mods quando seus arquivos mudam. Se não usar o layout
+integrado, o painel ainda pode ser aberto sem alterar o layout pessoal em uma
+aba nativa (`herdr-app commands` lista os argumentos da versão instalada):
 
 ```sh
 herdr-app do tab.new --name "TStack reviews" --mod tstack-herdr-review
