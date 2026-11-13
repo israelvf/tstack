@@ -8,7 +8,10 @@ description: Troque mensagens, feedback e solicitações entre sessões existent
 Use o CLI `hc` do Herdr Core para falar com agentes existentes. O desktop
 `herdr-app` compartilha seus terminais com `hc`; a TUI legada `herdr` usa outro
 backend. Não reinicie o core nem altere programas, permissões ou sessões para
-enviar mensagens.
+enviar mensagens. A única exceção de criação é uma invocação explícita de
+`sol-loop`, `council` ou `full-stop` que precisa de um revisor: essa invocação
+autoriza criar uma sessão dedicada conforme a política abaixo, nunca modificar
+uma sessão existente.
 
 ## Localizar os destinatários
 
@@ -39,6 +42,40 @@ Se não houver a sessão solicitada, informe isso; não abra outra sem autoriza�
 O transporte independe do modelo. Antigravity só está validado em uma execução
 quando uma sessão real dele foi localizada e o envio observado; um atalho de
 skill ou comando `agy` instalado não prova integração nem resposta automática.
+
+## Sessões de revisão autorizadas
+
+Somente a invocação explícita de `sol-loop`, `council` ou `full-stop` autoriza
+abrir terminais dedicados para os revisores nomeados. Não aplique esta exceção a
+um pedido avulso de transporte. Reutilize uma sessão somente se o `hc get` e a
+tela confirmarem papel/modelo, prontidão para esta tarefa, acesso ao mesmo
+snapshot e permissões efetivas somente leitura. **CWD sozinho não determina se
+um harness está ausente:** confira também `where`, título/assunto, modelo,
+estado, argv/flags e a tarefa atual. Nunca interrompa nem altere permissões de
+uma sessão ocupada ou de outro trabalho.
+
+Se a sessão estiver ausente, ocupada, em outro modelo, tiver permissões de
+escrita ou não puder abrir o snapshot, crie uma sessão interativa dedicada em
+um worktree detached no `head_sha`, com nome e labels únicos da conversa. Não
+use modo print/one-shot, fallback de modelo ou `--dangerously-skip-permissions`.
+Comandos verificados para este host; confira a ajuda da versão instalada antes
+de usar em outro host:
+
+```sh
+# Example names/path; replace the suffix, snapshot path and short head label.
+hc run --bg --name tstack-review-sol-a1b2c3d4 --cwd /tmp/tstack-review-a1b2c3d4 --label tstack.review=sol --label tstack.head=0123456789ab codex --no-daemon --model gpt-6.1-sol --sandbox read-only
+hc run --bg --name tstack-review-opus-a1b2c3d4 --cwd /tmp/tstack-review-a1b2c3d4 --label tstack.review=opus --label tstack.head=0123456789ab claude --model claude-opus-5-5 --permission-mode plan --disallowedTools Bash Edit Write NotebookEdit Task Agent
+hc run --bg --name tstack-review-argon-a1b2c3d4 --cwd /tmp/tstack-review-a1b2c3d4 --label tstack.review=argon --label tstack.head=0123456789ab agy --model gemini-4-argon-high --mode plan --sandbox --effort high
+```
+
+Depois da inicialização, valide o endereço retornado com `hc get` e `hc read`
+antes de enviar: confirme o modelo efetivo, cwd do snapshot, modo read-only e
+prompt pronto. Autenticação normal do harness é preservada; não faça logout,
+troque conta ou aceite uma confirmação para burlar bloqueios. Se o launch falhar
+ou ficar `blocked`, leia o motivo, corrija somente um erro recuperável do
+launcher e confira se a sessão anterior existe antes de tentar novamente. Em
+retomadas, procure primeiro a label/nome da conversa e reutilize a mesma sessão
+e o mesmo turno; nunca duplique um envio incerto.
 
 ## Identidade e contexto da mensagem
 

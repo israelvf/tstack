@@ -6,8 +6,10 @@ description: Use only when the user explicitly invokes sol-loop or asks for an i
 # sol-loop
 
 Use the Herdr `hc` transport and the local `herdr-messaging` skill. OpenCode
-implements; the one reviewer is an existing Codex session confirmed to be using
-GPT-6.1 Sol. Never substitute a model or start a reviewer session to fill a gap.
+implements; the reviewer is Codex GPT-6.1 Sol. Reuse an existing eligible
+session or, because this explicit review invocation authorizes it, start a
+dedicated read-only session by the `herdr-messaging` launch policy. Never
+substitute a model or change an existing session's permissions.
 
 Keep the change minimal. A review is evidence-driven, not a request to appease a
 model. Do not let findings expand the user's scope.
@@ -29,11 +31,16 @@ worktree, base commit and immutable head commit. `base_sha` and `head_sha` must
 be full commit IDs. If the intended change is uncommitted or the worktree is
 ambiguous, stop: a reviewer must not receive a moving snapshot.
 
-Use `hc ls --json`, then `hc get` and `hc read --lines 0` only for the matching
-candidate. Resolve by project/repository, exact worktree, Codex role and
-confirmed model. A terminal name or CLI executable alone is not proof of model
-identity. If the requested session is missing or ambiguous, report it; do not
-open another session or substitute.
+Use `hc ls --json`, then `hc get` and `hc read --lines 0` only for relevant
+candidates. Resolve by project/task, role, confirmed model, readiness, snapshot
+access and effective read-only mode; do not reject a harness solely because its
+launch CWD differs. Reuse only a free session suitable for this review. If it is
+missing, busy, on another model, writable or unable to access the snapshot,
+start one dedicated session using the Codex launcher in `herdr-messaging`.
+Never interrupt another task, relax existing permissions, or substitute a
+model. Before sending, verify the newly launched session's actual model, cwd,
+read-only sandbox and ready screen. On resume, locate this conversation's
+reviewer label/session first; do not launch a duplicate.
 
 The session must have effective read-only permissions. A read-only review
 worktree, when available, is detached at the exact `head_sha`; do not let the

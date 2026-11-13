@@ -8,12 +8,13 @@ description: Use only when the user explicitly invokes council or requests its i
 This is an on-demand, read-only review flow. OpenCode implements and verifies;
 the council only reviews. Use Herdr `hc` sessions and the local
 `herdr-messaging` skill. Do not use T3 delegates, launch CLI one-shots, or
-substitute another model.
+substitute another model. Invoking this skill explicitly authorizes dedicated
+reviewer sessions when no eligible existing session is available.
 
 ## Fixed members
 
-Resolve one existing Herdr session for each member, matching repository,
-project/worktree, role and confirmed model:
+Resolve one Herdr session for each member, matching project/task, role,
+confirmed model, snapshot access and effective read-only mode:
 
 1. Codex — GPT-6.1 Sol.
 2. Claude Code — Claude Opus 5.5.
@@ -21,22 +22,30 @@ project/worktree, role and confirmed model:
 
 The local preference/config file is `~/.config/tstack-herdr/roles.json`. It is
 personal and must remain outside Git. A catalog entry or installed CLI does not
-prove an active Herdr session. Use `hc ls --json`, then inspect only matching
-terminals with `hc get` and `hc read --lines 0`. If any member is absent,
-ambiguous, blocked, or running another model, record that member unavailable;
-do not silently replace them. Continue only with members that can be verified,
-and never describe a partial council as unanimous or complete.
+prove an active Herdr session. Use `hc ls --json`, then inspect only relevant
+terminals with `hc get` and `hc read --lines 0`. Do not infer harness absence
+from CWD alone: check `where`, subject/task, model, state and permissions. Reuse
+an existing session only if it is free for this review, matches the exact model,
+can access the snapshot and is effectively read-only. If absent, busy, on the
+wrong model, writable or unable to read the snapshot, start a dedicated session
+using `herdr-messaging`'s verified launcher policy. Never interrupt or alter an
+existing session's permissions. Verify the actual model, cwd, mode and ready
+screen after launch. On resume, find the same conversation's name/labels before
+launching anything, so an uncertain startup does not create duplicates. If
+launch/read-only verification fails, diagnose recoverable launcher problems;
+then report an effective blocker if still unavailable. Do not substitute. A
+partial council must be labeled partial, never unanimous or complete.
 
 ## Snapshot and independence
 
 Before requesting reviews, resolve the task, acceptance criteria, repository,
 exact worktree, `base_sha` and immutable `head_sha` (full commit IDs). Stop if
 the worktree is changing or contains an ambiguous/uncommitted snapshot. Confirm
-effective read-only permissions for every selected session. Use a
-read-only review checkout detached at the exact head when available; a separate
-worktree alone is not a security boundary. If an existing session cannot be
-shown to be read-only, mark that member unavailable rather than relying on the
-prompt.
+effective read-only permissions for every selected session. Use a review
+checkout detached at the exact head; a separate worktree alone is not a security
+boundary. Dedicated launches must use the harness-native read-only mode from
+`herdr-messaging`; if the actual mode or effective restrictions cannot be
+verified, mark the member unavailable rather than relying on the prompt.
 
 Create one `conversation_id` for the council. The first-round requests must be
 the same snapshot, criteria and evidence, sent independently. Do not include

@@ -41,8 +41,9 @@ cp -R tstack/skills/* ~/.gemini/antigravity/skills/ # agy
 
 - An authenticated [GitHub CLI](https://cli.github.com) (`gh`).
 - `python3` for `babysit-pr`'s `pr-wait` script.
-- `council` and `sol-loop` use existing Herdr sessions with the exact requested
-  role and model. Missing sessions are reported; no model is substituted.
+- `council` and `sol-loop` reuse only eligible Herdr sessions; an explicit
+  review invocation may launch a dedicated session in the harness's native
+  read-only mode when needed. Missing members are reported; no model is substituted.
 - The OpenCode/Herdr workflows, local message log, native app panel, model
   configuration and install paths are documented in [docs/herdr-workflow.md](docs/herdr-workflow.md).
 

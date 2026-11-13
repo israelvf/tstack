@@ -22,11 +22,10 @@ As skills de review do fork não ficam instaladas automaticamente pelo clone.
 Neste host, `herdr-messaging` nos quatro harnesses aponta para a mesma pasta
 Codex; copiar a versão atualizada do fork para lá atualiza os quatro.
 
-As instalações locais deste host usam esses quatro diretórios. A presença da
-pasta de skills do Antigravity CLI está confirmada; a descoberta de skills pelo
-`agy` depende da versão/configuração do CLI e não é inferida apenas pelo
-diretório. Não inicie uma revisão até o skill aparecer e a sessão real estar
-visível no `hc`.
+As instalações locais deste host usam esses quatro diretórios. A pasta global
+de skills do Antigravity CLI está presente, embora o `agy` não exponha um
+comando de listagem de skills nesta versão. O fluxo Herdr inicia o CLI
+diretamente, então não presume a descoberta automática da skill pelo `agy`.
 
 ## Modelos e papéis
 
@@ -54,12 +53,21 @@ GPT-6 Luna é a opção principal. DeepSeek V4.1 Flash fica configurado apenas
 para uma comparação futura; não o selecione automaticamente. Catálogo confirma
 que um modelo existe, mas não que uma sessão Herdr o esteja usando.
 
-Para resolver um revisor, use `hc ls --json`; confira endereço, cwd/worktree,
-projeto/assunto, papel e estado com `hc get <endereço> --json`; confirme modelo
-na sessão correspondente com `hc read <endereço> --lines 0`. Não pesquise ou
-leia conversas de outros projetos. Se a sessão não corresponder exatamente,
-marque o membro indisponível e não substitua. Não abra sessões novas para
-contornar uma ausência.
+Para resolver revisores, use `hc ls --json`; confira `where`, cwd/worktree,
+projeto/assunto, papel, argv e estado com `hc get <endereço> --json`; confirme
+modelo e prontidão com `hc read <endereço> --lines 0`. CWD sozinho não prova que
+um harness está ausente: avalie a tarefa e o modelo, sem ler histórico de outros
+projetos. Reutilize uma sessão livre somente se modelo, snapshot e acesso
+somente leitura forem confirmados.
+
+Uma invocação explícita de `council` ou `sol-loop` autoriza abrir sessões
+dedicadas quando as existentes estiverem ausentes, ocupadas ou inadequadas.
+Use o `hc run --bg` e os modos read-only nativos documentados em
+`skills/herdr-messaging/SKILL.md`; não altere permissões de sessões existentes,
+não use flags de bypass e não inicie uma CLI em modo print. Confira a sessão e
+o modelo efetivo depois do launch; um diálogo de login/permissão não pode ser
+contornado. Em retomadas, procure labels/nome da conversa antes de abrir
+duplicatas.
 
 O conselho usa, sem substituição:
 
