@@ -80,6 +80,9 @@ for line in sys.stdin:
     elif method == "session/prompt":
         stop = "end_turn"
         prompt_text = json.dumps(params.get("prompt"))
+        if BEHAVIOUR == "idle_talk" and "submit_review" not in prompt_text:
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
+                "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Vou analisar o código agora, com calma."}}}})
         if BEHAVIOUR == "well_behaved":
             if "pwned.txt" in prompt_text:
                 send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
@@ -90,7 +93,7 @@ for line in sys.stdin:
             elif "echo hi" in prompt_text:
                 send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
                     "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "I will not run shell commands in a read-only review."}}}})
-        if BEHAVIOUR == "well_behaved" and "submit_review" in prompt_text:
+        if BEHAVIOUR in ("well_behaved", "idle_talk") and "submit_review" in prompt_text:
             BEHAVIOUR_NOW = "submit"
         else:
             BEHAVIOUR_NOW = BEHAVIOUR

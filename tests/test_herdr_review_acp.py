@@ -140,6 +140,17 @@ class ProfileScrubTests(unittest.TestCase):  # ACP-06
             self.assertEqual(victim.read_text(), "keep")
             self.assertEqual(acp.scrub_profile(profile, "claude"), [])
 
+    def test_a_symlinked_state_file_is_unlinked_and_its_target_left_alone(self):
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "claude"
+            profile.mkdir()
+            real = Path(temp) / "real.json"
+            real.write_text(json.dumps({"mcpServers": {"x": {}}}))
+            (profile / ".claude.json").symlink_to(real)
+            self.assertIn(".claude.json", acp.scrub_profile(profile, "claude"))
+            self.assertFalse((profile / ".claude.json").exists() or (profile / ".claude.json").is_symlink())
+            self.assertIn("mcpServers", real.read_text())
+
     def test_codex_instructions_are_removed_too(self):
         with tempfile.TemporaryDirectory() as temp:
             profile = Path(temp) / "codex"
@@ -459,7 +470,8 @@ class CheckTests(unittest.TestCase):
             try:
                 report = acp.run_check("fake", spec=fake_spec(FAKE="well_behaved"), timeout=20)
                 self.assertTrue(report["passed"], report)
-                self.assertEqual(report["attempts"], {"write": "request_rejected", "shell": "refused_in_text"})
+                self.assertEqual(report["attempts"], {"write": "request_rejected", "shell": "no_attempt"})
+                self.assertEqual((report["status"], report["exercised"]), ("unexercised", ["write"]))
                 self.assertEqual(list(Path(root).iterdir()), [])
             finally:
                 if old is None:
@@ -483,20 +495,20 @@ class CheckEvidenceTests(unittest.TestCase):
                 else:
                     os.environ["TSTACK_REVIEW_ROOT"] = old
 
-    def test_an_acknowledgment_without_any_refusal_is_not_evidence_of_blocking(self):  # ACP-09
-        with tempfile.TemporaryDirectory() as root:
-            old = os.environ.get("TSTACK_REVIEW_ROOT")
-            os.environ["TSTACK_REVIEW_ROOT"] = root
-            try:
-                report = acp.run_check("fake", spec=fake_spec(FAKE="submit"), timeout=20)  # answers every prompt with just "DONE"
-                self.assertFalse(report["passed"])
-                self.assertEqual(report["attempts"], {"write": "no_evidence", "shell": "no_evidence"})
-                self.assertFalse(report["checks"]["write_attempt_blocked"])
-            finally:
-                if old is None:
-                    del os.environ["TSTACK_REVIEW_ROOT"]
-                else:
-                    os.environ["TSTACK_REVIEW_ROOT"] = old
+    def test_text_is_never_evidence_that_the_policy_works(self):  # ACP-09
+        for behaviour in ("submit", "idle_talk"):  # one answers only DONE, the other chats about something unrelated
+            with tempfile.TemporaryDirectory() as root:
+                old = os.environ.get("TSTACK_REVIEW_ROOT")
+                os.environ["TSTACK_REVIEW_ROOT"] = root
+                try:
+                    report = acp.run_check("fake", spec=fake_spec(FAKE=behaviour), timeout=20)
+                    self.assertEqual(report["attempts"], {"write": "no_attempt", "shell": "no_attempt"}, behaviour)
+                    self.assertEqual((report["status"], report["exercised"]), ("unexercised", []), behaviour)
+                finally:
+                    if old is None:
+                        del os.environ["TSTACK_REVIEW_ROOT"]
+                    else:
+                        os.environ["TSTACK_REVIEW_ROOT"] = old
 
     def test_a_forbidden_attempt_that_never_finishes_is_not_counted_as_blocked(self):
         with tempfile.TemporaryDirectory() as root:
@@ -505,7 +517,8 @@ class CheckEvidenceTests(unittest.TestCase):
             try:
                 report = acp.run_check("fake", spec=fake_spec(FAKE="hang"), timeout=1)
                 self.assertFalse(report["passed"])
-                self.assertFalse(report["checks"].get("write_attempt_blocked", False))
+                self.assertEqual(report["status"], "failed")
+                self.assertFalse(report["checks"].get("write_attempt_had_no_effect", False))
             finally:
                 if old is None:
                     del os.environ["TSTACK_REVIEW_ROOT"]
