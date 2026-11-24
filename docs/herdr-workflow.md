@@ -137,6 +137,7 @@ any Git repository; it is yours, not part of this project.
   every model of it. Without an entry the panel shows the model name as it is
   logged (normalized, for example `Claude Opus 5.5`) and a built-in color; an agent
   it does not know gets a stable color derived from its name, never a shared grey.
+  Within one task, no two participants share a default color.
   The older `colors` block (`sol`, `opus`, `gemini`, `implementer`) still works.
 
 ## Workflows

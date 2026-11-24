@@ -199,7 +199,10 @@ const KNOWN_COLORS = { "gpt-6.1-sol": "#10a37f", "claude-opus-5.5": "#d97757", "
 const FAMILY_COLORS = [[/\bsol\b|-sol$/, "#10a37f"], [/opus/, "#d97757"], [/sonnet/, "#d4a72c"], [/haiku/, "#14b8a6"],
   [/gemini|argon/, "#8b5cf6"], [/luna/, "#2563eb"]];
 
-const hashOf = (text) => { let hash = 0; for (const char of text) hash = (hash * 31 + char.charCodeAt(0)) >>> 0; return hash; };
+// FNV-1a: spreads similar names ("claude-opus-4", "claude-opus-4.6") far apart.
+const hashOf = (text) => { let hash = 2166136261; for (const char of text) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619) >>> 0; return hash; };
+const HUE_SHIFTS = [-44, -38, -32, -26, -20, -14, -8, 8, 14, 20, 26, 32, 38, 44];
+const LIGHT_SHIFTS = [-0.1, -0.075, -0.05, -0.025, 0, 0.025, 0.05, 0.075, 0.1];
 
 function hexToHsl(hex) {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
@@ -224,7 +227,7 @@ function defaultColor(identity) {
   for (const [pattern, base] of FAMILY_COLORS) {
     if (!pattern.test(key)) continue;
     const [h, sat, l] = hexToHsl(base);
-    const hue = ((hash % 6) + 1) * (hash & 1 ? 1 : -1) * 4, light = (((hash >> 3) % 3) - 1) * 0.06;
+    const hue = HUE_SHIFTS[hash % HUE_SHIFTS.length], light = LIGHT_SHIFTS[(hash >>> 8) % LIGHT_SHIFTS.length];
     return hslToHex((h + hue + 360) % 360, sat, Math.min(0.7, Math.max(0.35, l + light)));
   }
   if (identity.harnessKey === "opencode" && !identity.modelKey) return "#2563eb";
@@ -252,13 +255,30 @@ function dated(list) {
   return out;
 }
 
+// Within one task no two participants share a default color: a hash cannot guarantee that for any pair
+// of models, so a clash is resolved by turning the later participant's hue until it is free.
+function distinctColors(agents) {
+  const used = new Set();
+  for (const agent of agents) {
+    let color = defaultColor(agent), tries = 0;
+    while (used.has(color) && tries++ < 24) {
+      const [h, sat, l] = hexToHsl(color);
+      color = hslToHex((h + 14) % 360, sat, l);
+    }
+    used.add(color);
+    agent.autoColor = color;
+  }
+}
+
 // ---- Review status ---------------------------------------------------------------
 
-const VERDICT_LINE = /^[\s>*#_`-]*(?:(?:verdict|veredito)\s*[:—–-]\s*)?(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)\b(?:[\s*_`.!:]*|\s*[—–-]\s.*)$/i;
+const VERDICT_LINE = /^(?:(?:verdict|veredito)\s*[:—–-]\s*)?(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)(?![A-Za-z])(?:[\s.!:]*|\s*[—–-]\s.*)$/i;
 
 // The verdict is an explicit line near the top, after any Summary line; mentioning the word is not a verdict.
+// Markdown emphasis (**Verdict:** APPROVE, __APPROVE__, > quotes) is removed before the line is checked.
 function verdictOf(text) {
-  const lines = String(text).replace(SUMMARY_LINE, "").split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 6);
+  const lines = String(text).replace(SUMMARY_LINE, "").split("\n").slice(0, 12)
+    .map((line) => line.replace(/[*`#>]/g, "").replace(/^[\s_-]+|[\s_-]+$/g, "")).filter(Boolean).slice(0, 6);
   for (const line of lines) {
     const found = VERDICT_LINE.exec(line);
     if (found) return found[1].toUpperCase();
@@ -303,6 +323,7 @@ function tasks(messages) {
       if (message.direction === "outgoing") for (const copy of message.copies) addAgent(identityFrom(copy.recipient, copy.recipient_model));
     }
     const sessions = [...new Set(items.flatMap((m) => [m.source_session, ...m.copies.map((c) => c.destination_session)]).filter(Boolean))];
+    distinctColors(agents);
     list.push({
       id, title: taskTitle(items), repo: first.repo, worktree: first.worktree, head: last.head_sha,
       rounds: Math.max(...items.map((m) => m.round)), messages: items, last, agents, sessions, status: statusOf(items),
@@ -598,7 +619,7 @@ export default class TStackReviews extends View {
       : /gemini|argon/.test(family) ? this.colors.gemini : /luna|opencode/.test(family) ? this.colors.implementer : undefined;
     const valid = (color) => (typeof color === "string" && HEX.test(color) ? color : null);
     return { name: typeof config.name === "string" && config.name.trim() ? config.name.trim() : identity.name,
-      color: valid(config.color) ?? valid(legacy) ?? defaultColor(identity) };
+      color: valid(config.color) ?? valid(legacy) ?? identity.autoColor ?? defaultColor(identity) };
   }
 
   // The agent's name; when two participants share it (one model through two harnesses), add the harness.
@@ -657,7 +678,8 @@ export default class TStackReviews extends View {
   // ---- Conversation ----------------------------------------------------------
 
   bubble(task, message, t, available) {
-    const identity = identityOf(message);
+    const own = identityOf(message);
+    const identity = task.agents.find((agent) => agent.key === own.key) ?? own;
     const { name, color: accent } = this.style(identity);
     const right = message.source_session === task.originSession; // the coordinator who started the task
     const tick = receipt(task, message, this.deliveries, this.reads);
