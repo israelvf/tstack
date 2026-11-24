@@ -747,7 +747,8 @@ export default class TStackReviews extends View {
     }
     const meta = [where ? `${where.spaceName} › ${where.tabName}` : null, `${task.repo} @ ${task.head.slice(0, 7)}`].filter(Boolean).join("  ·  ");
     return v_flex().flex_1().min_h(0).min_w(0).child(
-      v_flex().w_full().gap(7).px(14).pt(10).pb(11).border_b(1).border_color(t.border)
+      // No bottom border: the first round divider right below already separates the header from the chat.
+      v_flex().w_full().gap(7).px(14).pt(10).pb(11)
         .child(div().text_size(11.5).text_color(t.accent).cursor_pointer()
           .on_click((_event, cx) => { this.selected = null; cx.notify(); }).child("← Tasks"))
         .child(div().w_full().font_semibold().text_size(14).text_color(t.foreground).child(task.title))
