@@ -170,17 +170,19 @@ function normalizeModel(raw) {
 }
 
 // Older records only carry the model inside the label ("Codex GPT-6.1 Sol / t4h").
-function modelFromLabel(label, harness) {
-  let rest = displayName(label);
-  for (const [pattern] of HARNESSES) rest = rest.replace(new RegExp(`^(?:${pattern.source})(?:\\s+code|\\s+cli)?\\s*`, "i"), "");
-  return rest.replace(/\b(implementer|reviewer)\b/gi, "").trim();
+function modelFromLabel(label) {
+  // Only an explicit harness prefix goes ("Claude Code Claude Opus 5.5"); "Claude Opus 5.5" is a model name.
+  return displayName(label).replace(/^(?:claude code|codex|opencode|antigravity(?:\s+cli)?|agy)\b\s*/i, "")
+    .replace(/\b(implementer|reviewer)\b/gi, "").trim();
 }
 
 function identityFrom(label, modelRaw) {
   const clean = displayName(label ?? "");
   const harness = harnessOf(clean) ?? harnessOf(modelRaw);
-  const model = normalizeModel(modelRaw || modelFromLabel(clean, harness));
-  return { key: slug(model || harness || clean) || "agent", harness, model, name: model || harness || clean || "Agent",
+  const model = normalizeModel(modelRaw || modelFromLabel(clean));
+  const modelKey = slug(model), harnessKey = slug(harness);
+  return { key: [harnessKey, modelKey].filter(Boolean).join("|") || slug(clean) || "agent", modelKey, harnessKey,
+    harness, model, name: model || harness || clean || "Agent",
     full: [harness, modelRaw || model].filter(Boolean).join(" · ") };
 }
 
@@ -192,14 +194,40 @@ function initials(name) {
 }
 
 const PALETTE = ["#2563eb", "#10a37f", "#d97757", "#8b5cf6", "#d4a72c", "#14b8a6", "#e11d48", "#64748b"];
-const DEFAULT_BY_MODEL = [[/\bsol\b/, "#10a37f"], [/opus/, "#d97757"], [/sonnet/, "#d4a72c"], [/haiku/, "#14b8a6"],
-  [/gemini|argon/, "#8b5cf6"], [/luna|opencode/, "#2563eb"]];
+const KNOWN_COLORS = { "gpt-6.1-sol": "#10a37f", "claude-opus-5.5": "#d97757", "claude-sonnet-5.5": "#d4a72c",
+  "gpt-6-luna": "#2563eb", "gemini-4-argon": "#8b5cf6" };
+const FAMILY_COLORS = [[/\bsol\b|-sol$/, "#10a37f"], [/opus/, "#d97757"], [/sonnet/, "#d4a72c"], [/haiku/, "#14b8a6"],
+  [/gemini|argon/, "#8b5cf6"], [/luna/, "#2563eb"]];
 
-// A stable color for any agent: a known model's color, else one picked from the key.
+const hashOf = (text) => { let hash = 0; for (const char of text) hash = (hash * 31 + char.charCodeAt(0)) >>> 0; return hash; };
+
+function hexToHsl(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min, l = (max + min) / 2;
+  const sat = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  let hue = d === 0 ? 0 : max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [(hue * 60 + 360) % 360, sat, l];
+}
+
+function hslToHex(h, sat, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * sat, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
+  const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return `#${[r, g, b].map((v) => Math.round((v + m) * 255).toString(16).padStart(2, "0")).join("")}`;
+}
+
+// A stable color per model: the known color for known models; for another model of a known family,
+// the family color shifted in hue and lightness by its name; for an unknown family, a palette pick.
 function defaultColor(identity) {
-  for (const [pattern, color] of DEFAULT_BY_MODEL) if (pattern.test(identity.key)) return color;
-  let hash = 0;
-  for (const char of identity.key) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  const key = identity.modelKey || identity.harnessKey || identity.key;
+  if (KNOWN_COLORS[key]) return KNOWN_COLORS[key];
+  const hash = hashOf(key);
+  for (const [pattern, base] of FAMILY_COLORS) {
+    if (!pattern.test(key)) continue;
+    const [h, sat, l] = hexToHsl(base);
+    const hue = ((hash % 6) + 1) * (hash & 1 ? 1 : -1) * 4, light = (((hash >> 3) % 3) - 1) * 0.06;
+    return hslToHex((h + hue + 360) % 360, sat, Math.min(0.7, Math.max(0.35, l + light)));
+  }
+  if (identity.harnessKey === "opencode" && !identity.modelKey) return "#2563eb";
   return PALETTE[hash % PALETTE.length];
 }
 
@@ -226,11 +254,16 @@ function dated(list) {
 
 // ---- Review status ---------------------------------------------------------------
 
+const VERDICT_LINE = /^[\s>*#_`-]*(?:(?:verdict|veredito)\s*[:—–-]\s*)?(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)\b(?:[\s*_`.!:]*|\s*[—–-]\s.*)$/i;
+
+// The verdict is an explicit line near the top, after any Summary line; mentioning the word is not a verdict.
 function verdictOf(text) {
-  // A leading "Summary:" line can be long; the verdict is looked for after it.
-  const body = String(text).replace(SUMMARY_LINE, "");
-  const found = /\b(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)\b/.exec(body.slice(0, 300));
-  return found ? found[1] : null;
+  const lines = String(text).replace(SUMMARY_LINE, "").split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 6);
+  for (const line of lines) {
+    const found = VERDICT_LINE.exec(line);
+    if (found) return found[1].toUpperCase();
+  }
+  return null;
 }
 
 // Where the latest round stands: who has not answered yet, or the combined verdict.
@@ -401,7 +434,8 @@ function summarize(message) {
   const written = SUMMARY_LINE.exec(message.text);
   if (written && written[1].trim()) return shorten(written[1].trim(), 500);
   const text = message.text.trim();
-  const verdict = message.direction === "incoming" ? /\b(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)\b/.exec(text.slice(0, 300)) : null;
+  const word = message.direction === "incoming" ? verdictOf(text) : null;
+  const verdict = word ? [null, word] : null;
   if (verdict) {
     if (verdict[1] === "APPROVE") return "Approved";
     if (verdict[1] === "INCONCLUSIVE") return "Inconclusive";
@@ -464,7 +498,7 @@ export default class TStackReviews extends View {
   async loadColors() {
     try {
       const roles = JSON.parse((await readTextFile(ROLES_PATH())) ?? "{}");
-      const object = (value) => (value && typeof value === "object" ? value : {});
+      const object = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
       this.colors = object(roles.colors);
       this.agents = object(roles.agents);
     } catch { this.colors = {}; this.agents = {}; }
@@ -557,11 +591,21 @@ export default class TStackReviews extends View {
 
   // Name and color for an agent: the user's roles.json first, then the built-in defaults.
   style(identity) {
-    const config = this.agents[identity.key] ?? this.agents[slug(identity.harness)] ?? {};
-    const legacy = /\bsol\b/.test(identity.key) ? this.colors.sol : /opus/.test(identity.key) ? this.colors.opus
-      : /gemini|argon/.test(identity.key) ? this.colors.gemini : /luna|opencode/.test(identity.key) ? this.colors.implementer : undefined;
-    const valid = (color) => (HEX.test(color ?? "") ? color : null);
-    return { name: config.name || identity.name, color: valid(config.color) ?? valid(legacy) ?? defaultColor(identity) };
+    const plain = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
+    const config = plain(this.agents[identity.key] ?? this.agents[identity.modelKey] ?? this.agents[identity.harnessKey]);
+    const family = identity.modelKey || identity.harnessKey;
+    const legacy = /\bsol\b|-sol$/.test(family) ? this.colors.sol : /opus/.test(family) ? this.colors.opus
+      : /gemini|argon/.test(family) ? this.colors.gemini : /luna|opencode/.test(family) ? this.colors.implementer : undefined;
+    const valid = (color) => (typeof color === "string" && HEX.test(color) ? color : null);
+    return { name: typeof config.name === "string" && config.name.trim() ? config.name.trim() : identity.name,
+      color: valid(config.color) ?? valid(legacy) ?? defaultColor(identity) };
+  }
+
+  // The agent's name; when two participants share it (one model through two harnesses), add the harness.
+  chipName(task, identity) {
+    const name = this.style(identity).name;
+    return task.agents.filter((other) => this.style(other).name === name).length > 1 && identity.harness
+      ? `${name} (${identity.harness})` : name;
   }
 
   avatar(identity, size) {
@@ -668,7 +712,7 @@ export default class TStackReviews extends View {
         .child(h_flex().w_full().flex_wrap().gap_x(12).gap_y(5)
           .children(task.agents.map((identity) => h_flex().gap(5).items_center().tooltip(identity.full || identity.name)
             .child(this.avatar(identity, 16))
-            .child(div().text_size(11.5).text_color(t.muted).child(this.style(identity).name)))))
+            .child(div().text_size(11.5).text_color(t.muted).child(this.chipName(task, identity))))))
         .child(h_flex().w_full().gap(8).items_center()
           .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(meta))
           .when(Boolean(task.status.label), (el) => el.child(this.statusChip(task.status, t)))

@@ -341,7 +341,10 @@ at another file.
   title (up to two lines), the latest message's summary, a badge per participant
   (its initials, in its color), a status chip and where the task started. The status
   reads the latest round: `Awaiting reply`, `Awaiting 1 of 2`, `Changes requested`,
-  `Approved` or `Inconclusive`.
+  `Approved` or `Inconclusive`. A reply counts as a verdict only when `APPROVE`,
+  `CHANGES_REQUESTED` or `INCONCLUSIVE` stands alone on one of its first lines
+  (after any `Summary:` line, optionally as `Verdict: ...`); merely mentioning the
+  word does not.
 - **Title.** The `title` field if present, otherwise the first message's
   `Subject:` line (`Assunto:` also works), otherwise the repository and a
   short commit SHA.
