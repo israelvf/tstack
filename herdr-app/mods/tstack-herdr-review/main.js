@@ -216,7 +216,9 @@ function findingsOf(text) {
     const head = FINDING.exec(lines[i]);
     if (!head) continue;
     const body = [];
-    for (let j = i + 1; j < lines.length && lines[j].trim() && !FINDING.test(lines[j]); j++) body.push(lines[j]);
+    let j = i + 1;
+    while (j < lines.length && !lines[j].trim()) j++; // a blank line may follow the heading
+    for (; j < lines.length && lines[j].trim() && !FINDING.test(lines[j]); j++) body.push(lines[j]);
     const label = /^\s*[-*]?\s*(?:Impact|Impacto|Problem|Problema|Issue|Summary|Resumo)\s*:\s*/i;
     const prose = body.map((line) => line.replace(label, "")).join(" ");
     const sentence = firstSentence(prose) || firstSentence(head[3]);
@@ -247,7 +249,7 @@ function intentOf(text) {
 function summarize(message) {
   if (typeof message.summary === "string" && message.summary.trim()) return message.summary.trim();
   const text = message.text.trim();
-  const verdict = /\b(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)\b/.exec(text.slice(0, 300));
+  const verdict = message.direction === "incoming" ? /\b(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)\b/.exec(text.slice(0, 300)) : null;
   if (verdict) {
     if (verdict[1] === "APPROVE") return "Approved";
     if (verdict[1] === "INCONCLUSIVE") return "Inconclusive";
@@ -270,7 +272,7 @@ function summarize(message) {
     const head = `Review requested · round ${message.round}${n ? ` · ${n} ${n === 1 ? "criterion" : "criteria"}` : ""}`;
     return intent ? `${head}\n${intent}` : head;
   }
-  return firstSentence(text);
+  return firstSentence(text) || shorten(text.replace(/\s+/g, " ").trim(), SUMMARY_MAX) || "(empty message)";
 }
 
 // ---- Colors --------------------------------------------------------------------
