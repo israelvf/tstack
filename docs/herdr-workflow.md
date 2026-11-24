@@ -125,11 +125,39 @@ limpo, não a tela bruta do terminal.
 
 `hc events` contém fatos de estado/turno e não é fonte de conteúdo de conversa.
 O mod não presume que esses eventos carreguem mensagens: lê apenas o JSONL
-local, agrupa por conversa/rodada e mostra um balão por mensagem, com autor,
-horário e ação para abrir a sessão de origem. Envios de grupo usam um mesmo
-`group_message_id` e exibem o status de entrega por destinatário no balão.
-O mod lê no
-máximo o último MiB e mostra até 180 mensagens recentes.
+local. Ele lê no máximo o último MiB e usa até 400 mensagens recentes.
+
+O painel (título **Reviews**) funciona como um chat em grupo:
+
+- **Lista de tasks:** uma task é uma `conversation_id`. A lista vem da mais
+  recente para a mais antiga, com uma linha separadora por dia (`dd/mm/aa`),
+  título legível, prévia da última mensagem, bolinhas coloridas dos
+  participantes, rodada e número de mensagens.
+- **Título:** campo opcional `title` da primeira mensagem; sem ele, usa o
+  assunto (`Assunto:`) da primeira mensagem ou repositório e SHA curto.
+- **Conversa:** um balão por mensagem, com a cor do agente, separadores de
+  rodada, mensagens longas recolhidas ("Show more") e o botão "Open session"
+  quando a sessão de origem está viva. Envios de grupo usam um mesmo
+  `group_message_id` e viram um único balão.
+- **Texto legível:** SHAs de 40 caracteres e UUIDs aparecem abreviados, caminhos
+  absolutos do snapshot viram nomes curtos, e a linha `Assunto:` não se repete
+  no corpo. Referências como `arquivo.js:39` são links que abrem o arquivo numa
+  aba (`zed-file`); o diff não é aberto, porque os snapshots não têm `.git`.
+- **Space e aba:** a task mostra onde nasceu (`space_name › tab_name`) e o link
+  "go to tab" seleciona essa aba. Usa `space_id`/`tab_id` do log quando existem
+  e, se não existirem, o contexto da sessão de origem enquanto ela está viva.
+- **Checks:** ✓ enviado; ✓✓ cinza entregue (registro `delivery` com `sent`);
+  ✓✓ azul lido; `!` entrega bloqueada. "Lido" vem de um registro `kind=read`
+  ou, na falta dele, de o destinatário ter postado depois na mesma task. O
+  recibo de leitura só indica leitura, não aprovação.
+
+As cores ficam em `~/.config/tstack-herdr/roles.json`, sob `colors`. Chaves:
+`implementer`, `sol`, `opus`, `gemini` e `other`; os valores são `#rrggbb`.
+Chaves ausentes usam o padrão do mod.
+
+```json
+{ "colors": { "implementer": "#2563eb", "sol": "#10a37f", "opus": "#d97757" } }
+```
 
 O painel lateral é composto por `herdr-app/layouts/github-and-trunk-reviews.json`,
 o mod `herdr-app/mods/tabs-with-reviews` (botão Reviews e restauração por
@@ -174,6 +202,18 @@ Cada mensagem é um registro `kind=message`; cada recibo é um registro
 `started`, `status` e `turn` que o `hc` retornou. O restante dos metadados de
 conversa e snapshot é repetido para manter correlação. Não armazene a saída
 bruta do terminal.
+
+Campos opcionais de `kind=message`, todos strings não vazias: `title`,
+`space_id`, `tab_id`, `space_name`, `tab_name` e `group_message_id` (UUID).
+Coloque-os na primeira mensagem da task. `herdr-review-log context` imprime o
+space e a aba da sessão atual a partir dos rótulos do Herdr. Um registro
+`kind=read` (`event_id`, `related_event_id`, `conversation_id`, `reader`,
+`created_at`) marca que uma sessão leu uma mensagem:
+
+```sh
+herdr-review-log context
+herdr-review-log read --conversation <uuid> --event <event_id da mensagem lida>
+```
 
 Herdr recarrega os mods quando seus arquivos mudam. Se não usar o layout
 integrado, o painel ainda pode ser aberto sem alterar o layout pessoal em uma
