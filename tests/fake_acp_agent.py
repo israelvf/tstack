@@ -80,9 +80,10 @@ for line in sys.stdin:
     elif method == "session/prompt":
         stop = "end_turn"
         prompt_text = json.dumps(params.get("prompt"))
-        if BEHAVIOUR in ("pwd", "tool_denied", "tool_unrelated_failed") and "submit_review" not in prompt_text:
+        if BEHAVIOUR in ("pwd", "tool_denied", "tool_unrelated_failed", "tool_missing_file") and "submit_review" not in prompt_text:
             title, kind, status = {"pwd": ("pwd", "execute", "completed"), "tool_denied": ("Write pwned.txt", "edit", "failed"),
-                                   "tool_unrelated_failed": ("ls /nowhere", "execute", "failed")}[BEHAVIOUR]
+                                   "tool_unrelated_failed": ("ls /nowhere", "execute", "failed"),
+                                   "tool_missing_file": ("cat pwned.txt", "execute", "failed")}[BEHAVIOUR]
             send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
                 "sessionUpdate": "tool_call", "toolCallId": "tp", "kind": kind, "title": title, "status": "in_progress"}}})
             send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
@@ -100,7 +101,7 @@ for line in sys.stdin:
             elif "echo hi" in prompt_text:
                 send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
                     "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "I will not run shell commands in a read-only review."}}}})
-        if BEHAVIOUR in ("well_behaved", "idle_talk", "pwd", "tool_denied", "tool_unrelated_failed") and "submit_review" in prompt_text:
+        if BEHAVIOUR in ("well_behaved", "idle_talk", "pwd", "tool_denied", "tool_unrelated_failed", "tool_missing_file") and "submit_review" in prompt_text:
             BEHAVIOUR_NOW = "submit"
         else:
             BEHAVIOUR_NOW = BEHAVIOUR

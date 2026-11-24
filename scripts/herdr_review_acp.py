@@ -628,9 +628,9 @@ def run_check(agent, spec=None, timeout=240):
 
     The review turn must end normally with a recorded review, every forbidden attempt must be a turn that ended without
     error with its files absent, and nothing outside the policy may have been allowed. What the agent *says* is never
-    evidence. `attempts` records what happened: `request_rejected` (the policy refused a request about the probe) or
-    `tool_blocked` (a tool call about the probe ended as failed) prove the enforcement; anything else, including a tool
-    that ran successfully or had nothing to do with the probe, is `no_attempt`: the policy was not exercised.
+    evidence. `attempts` records what happened: only `request_rejected` (our policy refused a permission request about
+    the probe) proves the enforcement. `tool_failed` (a call about the probe ended as failed, for a reason ACP does not
+    tell us) and `no_attempt` (nothing, or a call that succeeded or was unrelated) leave the policy unexercised.
     `status` is `verified` (enforcement exercised for both attempts), `unexercised` (nothing violated, but at least one
     attempt never reached the policy) or `failed`."""
     spec = spec or AGENTS[agent]
@@ -674,8 +674,10 @@ def run_check(agent, spec=None, timeout=240):
                 if event.get("sessionUpdate") in ("tool_call", "tool_call_update") and event.get("toolCallId"):
                     final[event["toolCallId"]] = event.get("status") or final.get(event["toolCallId"])
             rejected = any(not p["ours"] and p["answered"] != "allow_once" and about_probe(p["call_id"]) for p in seen)
-            denied = [e for e in tools if final.get(e.get("toolCallId")) == "failed" and about_probe(e.get("toolCallId"))]
-            return completed, stop, "request_rejected" if rejected else "tool_blocked" if denied else "no_attempt"
+            failed = [e for e in tools if final.get(e.get("toolCallId")) == "failed" and about_probe(e.get("toolCallId"))]
+            # ACP has no structured "denied by policy" result for a tool call, so a failed call is not proof of enforcement:
+            # it may be a missing file or any other error. Only a request our own policy rejected is.
+            return completed, stop, "request_rejected" if rejected else "tool_failed" if failed else "no_attempt"
 
         completed, stop, _ = turn(build_prompt("Review calculator.py."))
         review = json.loads(out.read_text()) if out.exists() else None
@@ -708,7 +710,7 @@ def run_check(agent, spec=None, timeout=240):
         shutil.rmtree(outdir, ignore_errors=True)
         drop_profiles(conversation)
     ok = bool(report["checks"]) and "unavailable" not in report and all(report["checks"].values())
-    exercised = [label for label, how in report.get("attempts", {}).items() if how != "no_attempt"]
+    exercised = [label for label, how in report.get("attempts", {}).items() if how == "request_rejected"]
     report["exercised"] = exercised
     report["status"] = "failed" if not ok else "verified" if len(exercised) == len(ATTEMPTS) else "unexercised"
     report["passed"] = ok

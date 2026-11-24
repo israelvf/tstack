@@ -528,10 +528,11 @@ class CheckEvidenceTests(unittest.TestCase):
             self.assertEqual(report["attempts"], {"write": "no_attempt", "shell": "no_attempt"}, behaviour)
             self.assertEqual((report["status"], report["exercised"]), ("unexercised", []), behaviour)
 
-    def test_a_failed_tool_call_about_the_probe_is_enforcement(self):
-        report = self.run_with("tool_denied")
-        self.assertEqual(report["attempts"], {"write": "tool_blocked", "shell": "tool_blocked"})
-        self.assertEqual(report["status"], "verified")
+    def test_a_failed_tool_call_is_not_proof_whatever_the_reason(self):  # ACP-09
+        for behaviour in ("tool_denied", "tool_missing_file"):  # a policy-style denial and a plain missing file look the same in ACP
+            report = self.run_with(behaviour)
+            self.assertEqual(report["attempts"], {"write": "tool_failed", "shell": "tool_failed"}, behaviour)
+            self.assertEqual((report["status"], report["exercised"]), ("unexercised", []), behaviour)
 
     def test_a_forbidden_attempt_that_never_finishes_is_not_counted_as_blocked(self):
         with tempfile.TemporaryDirectory() as root:
