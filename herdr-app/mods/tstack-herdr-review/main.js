@@ -728,7 +728,7 @@ export default class TStackReviews extends View {
         .child(div().text_size(10.5).text_color(t.dim).child(clock(message.created_at)))
         .when(Boolean(tick.mark), (el) => el.child(div().text_size(11).font_semibold().text_color(tickColor).child(tick.mark))));
     // The gutter keeps a long bubble from filling the row, so the coordinator reads as "right" and the rest as "left".
-    return h_flex().w_full().when(right, (el) => el.justify_end().pl(40)).when(!right, (el) => el.pr(40)).child(card);
+    return h_flex().w_full().when(right, (el) => el.justify_end().pl(52).pr(12)).when(!right, (el) => el.pl(12).pr(52)).child(card);
   }
 
   chatView(task, t, live) {
@@ -738,9 +738,9 @@ export default class TStackReviews extends View {
     for (const message of task.messages) {
       if (message.round !== round) {
         round = message.round;
-        rows.push(h_flex().w_full().gap(8).items_center().py(4)
+        rows.push(h_flex().w_full().items_center().py(4)
           .child(div().flex_1().h(1).bg(t.border))
-          .child(div().text_size(10.5).text_color(t.dim).child(`Round ${round} · head ${message.head_sha.slice(0, 7)}`))
+          .child(div().px(10).text_size(10.5).text_color(t.dim).child(`Round ${round} · head ${message.head_sha.slice(0, 7)}`))
           .child(div().flex_1().h(1).bg(t.border)));
       }
       rows.push(this.bubble(task, message, t, live.has(message.source_session)));
@@ -761,7 +761,7 @@ export default class TStackReviews extends View {
           .when(Boolean(task.status.label), (el) => el.child(this.statusChip(task.status, t)))
           .when(Boolean(where), (el) => el.child(div().text_size(10.5).text_color(t.accent).cursor_pointer()
             .on_click(() => run("tab.select", { id: where.tab })).child("Go to tab ↗")))))
-      .child(v_flex().flex_1().min_h(0).min_w(0).overflow_y_scroll().gap(10).px(12).py(12).children(rows));
+      .child(v_flex().flex_1().min_h(0).min_w(0).overflow_y_scroll().gap(10).py(12).children(rows));
   }
 
   render() {
