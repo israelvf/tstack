@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 import uuid
+from unittest import mock
 from pathlib import Path
 
 from scripts.herdr_review_log import append, validate
@@ -122,6 +123,21 @@ class ReviewLogTests(unittest.TestCase):
                 os.environ.pop("TSTACK_REVIEW_ROOT", None)
             else:
                 os.environ["TSTACK_REVIEW_ROOT"] = old
+
+    def test_session_end_cwd_must_be_a_plain_real_folder_under_the_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "root"
+            outside = Path(temp) / "outside"
+            (root / "snap").mkdir(parents=True)
+            outside.mkdir()
+            (root / "link").symlink_to(outside)
+            codex = ["codex", "resume", "abc", "--sandbox", "read-only"]
+            with mock.patch.dict(os.environ, {"TSTACK_REVIEW_ROOT": str(root)}):
+                validate(self.session_end(codex, cwd=str(root / "snap")))
+                for bad in (f"{root}/..", f"{root}/.", f"{root}/snap/", f"{root}//snap", f"{root}/.hidden",
+                            f"{root}/snap/../snap", str(root / "link"), str(outside)):
+                    with self.assertRaises(ValueError, msg=bad):
+                        validate(self.session_end(codex, cwd=bad))
 
     def test_read_receipt(self):
         read = {"event_id": str(uuid.uuid4()), "kind": "read", "related_event_id": str(uuid.uuid4()),

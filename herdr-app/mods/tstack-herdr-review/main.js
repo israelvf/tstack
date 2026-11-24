@@ -100,7 +100,10 @@ function parseFlags(tokens, allowed) {
 function safeResume(end, root) {
   const argv = end?.resume_argv;
   if (!Array.isArray(argv) || argv.some((item) => typeof item !== "string" || !item)) return false;
-  if (typeof end.cwd !== "string" || end.cwd.slice(0, end.cwd.lastIndexOf("/")) !== root.replace(/\/$/, "")) return false;
+  // A plain folder name directly under the root: rejects ".", "..", "//" and a trailing slash.
+  const cut = typeof end.cwd === "string" ? end.cwd.lastIndexOf("/") : -1;
+  if (cut < 0 || end.cwd.slice(0, cut) !== root.replace(/\/$/, "")
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(end.cwd.slice(cut + 1))) return false;
   let id, flags;
   if (argv[0] === "codex") {
     if (argv.length < 3 || argv[1] !== "resume") return false;
@@ -401,9 +404,16 @@ export default class TStackReviews extends View {
       this.reads = parsed.reads;
       this.ends = parsed.ends;
       const resumable = new Set();
+      const real = async (path) => {
+        const out = await exec("realpath", ["-e", "--", path], { timeout: 3000 }).catch(() => ({ code: 1 }));
+        return out.code === 0 ? out.stdout.trim() : null;
+      };
+      const realRoot = parsed.ends.size ? await real(this.reviewRoot) : null;
       for (const [key, end] of parsed.ends) {
-        const there = await exec("test", ["-d", end.cwd], { timeout: 3000 }).catch(() => ({ code: 1 }));
-        if (there.code === 0 && safeResume(end, this.reviewRoot)) resumable.add(key);
+        if (!realRoot || !safeResume(end, this.reviewRoot)) continue;
+        // The folder must exist and, with symlinks resolved, still be a direct child of the real root.
+        const folder = await real(end.cwd);
+        if (folder && folder.slice(0, folder.lastIndexOf("/")) === realRoot) resumable.add(key);
       }
       this.resumable = resumable;
       await this.loadColors();

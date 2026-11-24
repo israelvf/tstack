@@ -47,6 +47,18 @@ RESUME_FLAGS = {
 }
 
 
+SNAPSHOT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def check_snapshot_cwd(cwd):
+    """cwd must be a plain folder name directly under the review root: no '.', '..', symlink or extra slashes."""
+    root = review_root()
+    if (os.path.normpath(cwd) != cwd or not SNAPSHOT_NAME.fullmatch(os.path.basename(cwd))
+            or Path(cwd).parent != root
+            or Path(os.path.realpath(cwd)).parent != Path(os.path.realpath(root))):
+        raise ValueError(f"cwd must be a plain folder directly under the review root {root}")
+
+
 def parse_flags(tokens, allowed):
     """Group tokens into {flag: [values]} using an allowlist; reject unknown, duplicate or stray tokens."""
     found, index = {}, 0
@@ -126,8 +138,7 @@ def validate(record):
         if record["harness"] not in {"claude", "codex"} or argv[0] != record["harness"]:
             raise ValueError("resume_argv must start with the claude or codex harness")
         validate_resume_argv(record["harness"], argv)
-        if Path(record["cwd"]).parent != review_root():
-            raise ValueError(f"cwd must be a folder directly under the review root {review_root()}")
+        check_snapshot_cwd(record["cwd"])
         return
     if kind == "read":
         try:

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from scripts.herdr_review_cleanup import (claude_project_dir, classify_snapshots, delete_snapshot,
-                                          find_resume_id, resume_argv, snapshot_candidates)
+                                          end_session, find_resume_id, resume_argv, snapshot_candidates)
 
 
 class CleanupTests(unittest.TestCase):
@@ -85,6 +85,42 @@ class CleanupTests(unittest.TestCase):
             (day / "rollout-a.jsonl").write_text(meta("/review/snap", "id-mine"))
             (day / "rollout-b.jsonl").write_text(meta("/review/other", "id-elsewhere"))
             self.assertEqual(find_resume_id("codex", "/review/snap", 0, conv), ("id-mine", None))
+
+
+    def test_end_session_keeps_a_confirmed_end_even_if_logging_cannot_run(self):
+        from scripts import herdr_review_cleanup as cleanup
+        info = {"argv": ["codex", "--sandbox", "read-only"], "cwd": "/review/snap", "created_ms": 0}
+        states = iter([{"state": "live"}, {"state": "live"}, {"state": "finished"}])  # exits a moment after kill
+
+        def fake_hc(*args):
+            return info if args[0] == "get" and not hasattr(fake_hc, "killed") else next(states)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["hc", "kill"]:
+                fake_hc.killed = True
+                return mock.Mock(returncode=0)
+            raise PermissionError("logger could not spawn")
+
+        conv = str(uuid.uuid4())
+        with mock.patch.object(cleanup, "hc_json", fake_hc), mock.patch.object(cleanup.subprocess, "run", fake_run), \
+                mock.patch.object(cleanup, "find_resume_id", return_value=("abc", None)), \
+                mock.patch.object(cleanup.time, "sleep", lambda _: None):
+            ended, problem = end_session(conv, {"address": "t1"}, Path("/tmp/none.jsonl"))
+        self.assertTrue(ended)
+        self.assertIn("not recorded", problem)
+
+    def test_end_session_reports_a_session_that_never_ends(self):
+        from scripts import herdr_review_cleanup as cleanup
+        info = {"argv": ["codex", "--sandbox", "read-only"], "cwd": "/review/snap", "created_ms": 0}
+        clock = iter(range(0, 100))
+        with mock.patch.object(cleanup, "hc_json", lambda *a: {**info, "state": "live"}), \
+                mock.patch.object(cleanup.subprocess, "run", lambda *a, **k: mock.Mock(returncode=0)), \
+                mock.patch.object(cleanup, "find_resume_id", return_value=("abc", None)), \
+                mock.patch.object(cleanup.time, "monotonic", lambda: next(clock)), \
+                mock.patch.object(cleanup.time, "sleep", lambda _: None):
+            ended, problem = end_session(str(uuid.uuid4()), {"address": "t1"}, Path("/tmp/none.jsonl"))
+        self.assertFalse(ended)
+        self.assertIn("did not end", problem)
 
 
 if __name__ == "__main__":

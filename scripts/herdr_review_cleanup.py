@@ -13,6 +13,7 @@ import argparse
 import datetime as dt
 import glob
 import re
+import time
 import json
 import os
 import shutil
@@ -133,7 +134,8 @@ def find_resume_id(harness, cwd, created_ms, conversation):
                 if path.stat().st_mtime < floor or not mentions(path, conversation):
                     continue
                 try:
-                    meta = json.loads(path.open(encoding="utf-8").readline()).get("payload", {})
+                    with path.open(encoding="utf-8") as handle:
+                        meta = json.loads(handle.readline()).get("payload", {})
                 except (OSError, ValueError):
                     continue
                 if isinstance(meta, dict) and meta.get("cwd") == cwd and meta.get("id"):
@@ -159,6 +161,20 @@ def log_command():
     return [found] if found else [sys.executable, str(Path(__file__).with_name("herdr_review_log.py"))]
 
 
+def wait_until_ended(address, seconds=3.0, step=0.3):
+    """hc kill may return before the process is gone; poll briefly, treating a failed read as 'not yet'."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            if hc_json("get", address).get("state") != "live":
+                return True
+        except (ValueError, OSError):
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(step)
+
+
 def end_session(conversation, session, log_file):
     """End one session and, once it is confirmed finished, log how to resume it.
 
@@ -176,17 +192,20 @@ def end_session(conversation, session, log_file):
             command = resume_argv(harness, argv, resume_id)
             problem = None if command else "read-only mode not confirmed in the launch flags"
     subprocess.run(["hc", "kill", session["address"]], capture_output=True, check=False)
-    state = hc_json("get", session["address"]).get("state")
-    if state == "live":
+    if not wait_until_ended(session["address"]):
         return False, "hc kill did not end the session"
+    # From here the session is confirmed ended: nothing below may report it as still running.
     if command:
         record = {"event_id": str(uuid.uuid4()), "kind": "session_end", "conversation_id": conversation,
                   "session": session["address"], "harness": harness, "cwd": info["cwd"], "resume_argv": command,
                   "created_at": dt.datetime.now(dt.timezone.utc).isoformat()}
-        result = subprocess.run([*log_command(), "append", "--file", str(log_file)], input=json.dumps(record),
-                                capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            problem = f"resume info rejected: {result.stderr.strip()}"
+        try:
+            result = subprocess.run([*log_command(), "append", "--file", str(log_file)], input=json.dumps(record),
+                                    capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                problem = f"resume info rejected: {result.stderr.strip()}"
+        except Exception as exc:
+            problem = f"resume info not recorded: {type(exc).__name__}: {exc}"
     return True, problem
 
 
