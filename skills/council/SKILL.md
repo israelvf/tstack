@@ -1,140 +1,116 @@
 ---
 name: council
-description: Use only when the user explicitly invokes council or requests its independent Sol and Opus audit.
+description: Use only when the user explicitly invokes council or requests its independent Sol, Opus and Neon audit.
 ---
 
 # Council
 
 This is an on-demand, read-only review flow. OpenCode implements and verifies;
-the council only reviews. Use Herdr `hc` sessions and the local
-`herdr-messaging` skill. Do not use T3 delegates, launch CLI one-shots, or
-substitute another model. Invoking this skill explicitly authorizes dedicated
-reviewer sessions when no eligible existing session is available.
+the council only reviews. The members run through the ACP executor
+`herdr-review-acp` (see `herdr-messaging`, "Reviewers over ACP"): each is a child
+process with its own session, not a terminal. Do not use T3 delegates, launch CLI
+one-shots, or substitute another model. Terminal reviewers (`hc run`, `hc send`) are a
+fallback only when the user asks for them.
 
 ## Fixed members
 
-Resolve one Herdr session for each member, matching project/task, role,
-confirmed model, snapshot access and effective read-only mode:
+1. `sol` — Codex, GPT-6.1 Sol.
+2. `opus` — Claude Code, Claude Opus 5.5.
+3. `neon` — Antigravity, Gemini 4 Neon Medium.
 
-1. Codex — GPT-6.1 Sol.
-2. Claude Code — Claude Opus 5.5.
-
-Antigravity is outside the default council: its interactive plan mode can
-pause at “Approve plan” instead of returning a final review.
-
-The local preference/config file is `~/.config/tstack-herdr/roles.json`. It is
-personal and must remain outside Git. A catalog entry or installed CLI does not
-prove an active Herdr session. Use `hc ls --json`, then inspect only relevant
-terminals with `hc get` and `hc read --lines 0`. Do not infer harness absence
-from CWD alone: check `where`, subject/task, model, state and permissions. Reuse
-an existing session only if it is free for this review, matches the exact model,
-can access the snapshot and is effectively read-only. If absent, busy, on the
-wrong model, writable or unable to read the snapshot, start a dedicated session
-using `herdr-messaging`'s verified launcher policy. Never interrupt or alter an
-existing session's permissions. Verify the actual model, cwd, mode and ready
-screen after launch. On resume, find the same conversation's name/labels before
-launching anything, so an uncertain startup does not create duplicates. If
-launch/read-only verification fails, diagnose recoverable launcher problems;
-then report an effective blocker if still unavailable. Do not substitute. A
-partial council must be labeled partial, never unanimous or complete.
+`herdr-review-acp agents` shows which can start. A member that is `unavailable`
+(missing login, adapter, or a mode or model the agent would not confirm) is reported as
+such; never replace it with another model. A partial council must be labeled partial,
+never unanimous or complete. `opencode` exists as an executor reviewer but is the
+implementer here, so it is not a member.
 
 ## Snapshot and independence
 
 Before requesting reviews, resolve the task, acceptance criteria, repository,
-exact worktree, `base_sha` and immutable `head_sha` (full commit IDs). Stop if
-the worktree is changing or contains an ambiguous/uncommitted snapshot. Confirm
-effective read-only permissions for every selected session. Use a review
-checkout detached at the exact head; a separate worktree alone is not a security
-boundary. Dedicated launches must use the harness-native read-only mode from
-`herdr-messaging`; if the actual mode or effective restrictions cannot be
-verified, mark the member unavailable rather than relying on the prompt.
+`base_sha` and immutable `head_sha` (full commit IDs). Stop if the worktree is changing
+or contains an ambiguous/uncommitted snapshot. Create one `conversation_id` (a UUID) for
+the council and make the snapshot with `herdr-review-acp snapshot --repo <repo> --head
+<head_sha> --conversation <uuid>`. All members read the same read-only folder; call it
+again each round (same path, new contents). The executor confirms each member's
+read-only mode and model before sending anything, refuses a writable snapshot, and
+checks the snapshot's fingerprint after the turn.
 
-Create one `conversation_id` for the council. The first-round requests must be
-the same snapshot, criteria and evidence, sent independently. Do not include
-another reviewer's findings or verdict. A reviewer may not edit, commit, push,
-comment, merge, or start another reviewer. Send to selected members only.
+The first-round request is the same brief for every member: snapshot, criteria and
+evidence, sent independently. Do not include another reviewer's findings or verdict in
+round 1. A reviewer may not edit, commit, push, comment, merge, or start another
+reviewer.
 
-Each request and response must carry:
+Each request must carry the repository, snapshot path, full base/head SHA, acceptance
+criteria and a concise proof/evidence summary, as clean text without tool calls or raw
+tool output. Findings come back through the `submit_review` tool (verdict, `summary`,
+and findings with stable ID, severity, `file:line`, impact, failure scenario, evidence
+and the smallest fix). Scores are optional and never votes.
 
-- `conversation_id`, `round`, sender and destination/session address;
-- repository and absolute worktree path;
-- full base/head SHA;
-- acceptance criteria and concise proof/evidence summary;
-- clean message text, without tool calls or raw tool output.
+## Running a round
 
-Findings must include stable ID, severity, `file:line`, impact, a concrete
-failure scenario, reproduction/evidence, and the smallest suggested action.
-Use `APPROVE`, `CHANGES_REQUESTED` or `INCONCLUSIVE`. Scores are optional and
-never votes.
+Write one brief file. Generate one new UUID for the brief and pass it to every member as
+`--group-message-id`, so the panel shows a single bubble for the request. Start all
+members at the same time, each in its own background process, and wait for all of
+them:
 
-Use one logical group message for the brief. `herdr-review-send send` (see
-`herdr-messaging`) does this correctly: one shared `group_message_id`, a record
-before each `hc send` and a delivery receipt. If you log by hand instead, append a
-per-recipient record with the same `group_message_id` (one new UUID for the
-brief), identical clean text and a distinct `event_id`. Keep recipient-specific
-routing outside the clean text. Preserve each `hc` receipt against its own
-`event_id`. For uncertain delivery, inspect that session before any retry.
-Log timeout, blocked/error, unavailable member and stale-SHA outcomes explicitly.
+```sh
+GROUP=$(uuidgen)
+for AGENT in sol opus neon; do
+  herdr-review-acp review --agent $AGENT --snapshot <path> --brief-file <brief> \
+    --conversation <uuid> --round <n> --group-message-id $GROUP --log \
+    --repo <owner/repo> --base-sha <base> --head-sha <head> --title "<short human title>" \
+    --summary "<friendly one or two sentences for the panel, in the user's language>" \
+    --sender-name "<your harness>" --sender-model "<your model>" > result-$AGENT.json &
+done
+wait
+```
 
-On the first logged message of a task, include `title` (short, human-readable)
-and the `space_id`/`tab_id`/`space_name`/`tab_name` printed by
-`python3 scripts/herdr_review_log.py context`. After reading a logged message,
-record it with `python3 scripts/herdr_review_log.py read --conversation <uuid>
---event <event_id>`.
+`--summary` is what the Reviews panel shows for your request: write it like a person
+talking to the council, never "Review requested · round 1". Ask in the brief for each
+member's `summary` in the user's language, as a short message to the coordinator.
+The executor logs the brief before it runs, then the delivery, each review as its own
+reply bubble and a resume record. Round 2 onward continues each member's session
+automatically. Do not edit the snapshot while a round runs.
+
+Read each `result-<agent>.json`; its `status` is what counts. Only `reviewed` is a review.
+`unavailable`, `timeout`, `tampered`, `unverified`, `agent_error`, `incomplete`,
+`refused_action` and `no_review` are not approvals and are reported by name (see
+`sol-loop`, "Read the result"). A `tampered` or `unverified` round is discarded for that
+member. Read `warnings` too. After reading a logged reply, record it with
+`herdr-review-log read --conversation <uuid> --event <logged.incoming_event>`.
+
+When every member has replied or reached a terminal outcome, you may give each member
+the others' final reviews as shared context in the next round's brief, preserving the
+original author and marking it as context, not a request. Do not do this in round 1.
 
 ## Findings and rounds
 
-Send the same request to all eligible reviewers independently. Monitor their
-sessions concurrently: use separate bounded `hc wait` calls, or
-`hc events --label` for the conversation, and read the relevant session as
-soon as its turn finishes. Process whichever completes first. Correlate the
-final reply to the conversation, round and SHA and append it immediately as
-one `incoming` group message, before waiting on any other reviewer or
-verifying findings. Tell each reviewer to write its review as the final message
-in its own session, not with `hc send`, opening it with a one-line `Summary:`
-(see `herdr-messaging`) that you copy verbatim into the log's `summary` field,
-and fetch it with `herdr-review-send last-reply` once its turn is complete (see
-`herdr-messaging`, "Reading a reviewer's reply").
-Mark a permission, folder-trust or plan dialog as blocked, report which one and
-what it asks, and do not answer it for the reviewer or record it as a final
-review.
-
-When all reviewers have replied or reached a terminal outcome for the round,
-relay each final review once to the other available reviewer as group context,
-preserving the original author and marking it as shared context with no reply
-requested. The reply is already visible in Reviews, so these forwards must not
-create new message bubbles. Do not echo a review to its author or start
-another round on receipt. Until the round closes, keep each reviewer's
-terminal independent. Do not edit the snapshot during review.
-
-The OpenCode implementer verifies findings and records
-`FIXED`, `DECLINED`, `OPEN` or `NOT_VERIFIED`, with evidence and a reason for
-every disposition. One proven blocker can block regardless of favorable
-opinions from other members.
+The OpenCode implementer verifies findings and records `FIXED`, `DECLINED`, `OPEN` or
+`NOT_VERIFIED`, with evidence and a reason for every disposition. One proven blocker
+can block regardless of favorable opinions from other members.
 
 There is no fixed number of rounds: keep going until every available member
-`APPROVE`s the exact current `head_sha`, or the user stops. Round 1 is the full
-review; every later round is only the new diff and the open findings, with the same
-base and a new full `head_sha`. Report the verdicts, findings and dispositions after
-each round. Do not restart the full review for nits or unrelated suggestions.
-Re-run applicable checks after corrections before reporting.
+`APPROVE`s the exact current `head_sha`, or the user stops. Round 1 is the full review;
+every later round is only the new diff and the open findings, with the same base and a
+new full `head_sha`. Report the verdicts, findings and dispositions after each round. Do
+not restart the full review for nits or unrelated suggestions. Re-run applicable checks
+after corrections before reporting.
 
-If a member keeps re-raising a finding you declined with evidence, or the findings
-stop shrinking, do not argue in circles: record the disagreement with both sides'
-evidence and ask the user to decide.
+If a member keeps re-raising a finding you declined with evidence, or the findings stop
+shrinking, do not argue in circles: record the disagreement with both sides' evidence
+and ask the user to decide.
 
 ## Outcome
 
-After `APPROVED`, end the dedicated reviewer sessions with
-`herdr-review-cleanup sessions --conversation <uuid> --approved`, then ask the user whether to delete
-the snapshots, saying that doing so prevents resuming those sessions later; see
-"Cleanup" in `herdr-messaging`. Keep everything after any other outcome and ask.
+Report each configured member separately: model, reviewed SHA, rounds, verdict,
+findings and status. Distinguish unavailable, timed-out, tampered, unverified and
+reviewed. `APPROVED` means all available reviews cover the current head, no confirmed
+blocker remains open, checks pass, and the implementer has no unresolved correctness
+concern. Missing members, open proven defects, or a stop before every available member
+approves, mean `BLOCKED` or `INCONCLUSIVE`, not approval. Council is advisory; it does
+not authorize a PR or merge.
 
-Report each configured member separately: exact session/model, reviewed SHA,
-rounds, verdict, findings and receipt/status. Distinguish unavailable,
-timed-out, blocked, stale-SHA and reviewed. `APPROVED` means all available
-reviews cover the current head, no confirmed blocker remains open, checks pass,
-and the implementer has no unresolved correctness concern. Missing members,
-open proven defects, or a stop before every available member approves, mean `BLOCKED` or
-`INCONCLUSIVE`, not approval. Council is advisory; it does not authorize a PR
-or merge.
+There are no terminals to end. After `APPROVED`, ask the user whether to delete the
+snapshot and the members' private history; deleting them prevents resuming those
+sessions later. Only after a clear yes run `herdr-review-cleanup snapshots --conversation
+<uuid> --yes`. Keep everything after any other outcome and ask.

@@ -13,21 +13,22 @@ app and its terminal backend, the Herdr Core CLI (`hc`).
 ## How it works
 
 ```
-implementer ──hc send──▶ reviewer A ─┐
- (writes code)           reviewer B ─┼─▶ findings ──▶ implementer fixes, replies
-                                     │
+implementer ──ACP──▶ reviewer A ─┐
+ (writes code)       reviewer B ─┼─▶ findings ──▶ implementer fixes, replies
+                                 │
         every message ──▶ messages.jsonl ──▶ Reviews panel
 ```
 
 - **Implementer:** the session that owns the editable worktree. By default an
   OpenCode session.
-- **Reviewers:** separate sessions that only read an immutable snapshot of the
-  change (a worktree detached at the exact head commit). They never edit,
-  commit, push or start other agents.
-- **Transport:** `hc send` delivers each request to a reviewer. A read-only
-  reviewer answers on screen, and the coordinator collects only its clean final
-  message with `hc read`. Raw terminal output, tool calls and intermediate text
-  are never logged as conversation.
+- **Reviewers:** separate agents that only read an immutable snapshot of the
+  change (an export of the exact head commit). They never edit, commit, push or
+  start other agents.
+- **Transport:** `herdr-review-acp` runs each reviewer as a child process over the
+  Agent Client Protocol (ACP). The request goes in a prompt; the review comes back
+  as structured data through a `submit_review` tool, never as parsed text. Raw
+  tool calls and intermediate text are never logged as conversation. Terminal
+  reviewers (`hc send`) remain available as a fallback.
 
 ## Requirements
 
@@ -63,9 +64,24 @@ harnesses link to.
 install -D -m 755 scripts/herdr_review_log.py ~/.local/bin/herdr-review-log
 install -D -m 755 scripts/herdr_review_cleanup.py ~/.local/bin/herdr-review-cleanup
 install -D -m 755 scripts/herdr_review_send.py ~/.local/bin/herdr-review-send
+install -D -m 755 scripts/herdr_review_acp.py ~/.local/bin/herdr-review-acp
 ```
 
-Install all three: `herdr-review-cleanup` and `herdr-review-send` write through the logger.
+Install all four: the others write through the logger.
+
+### ACP adapters
+
+The executor starts Codex and Claude through two small adapters, pinned and installed
+once. They use the `codex` and `claude` already on `PATH`, signed in as usual:
+
+```sh
+npm install --prefix ~/.local/share/tstack-herdr/acp-adapters --ignore-scripts --omit=optional \
+  @agentclientprotocol/codex-acp@2.12.0 @agentclientprotocol/claude-agent-acp@0.112.0
+```
+
+Set `TSTACK_ACP_ADAPTERS` to use another folder. Antigravity (`agy acp`) and OpenCode
+(`opencode acp`) speak ACP natively. Check the setup with `herdr-review-acp agents`, and
+run `herdr-review-acp check` to exercise each reviewer (it spends a few tokens).
 
 ### Reviews panel
 
@@ -144,8 +160,8 @@ any Git repository; it is yours, not part of this project.
 
 | Skill | Reviewers | Rounds |
 | --- | --- | --- |
-| `sol-loop` | Codex, one at a time | until approved |
-| `council` | Codex (GPT-6.1 Sol) and Claude Code (Claude Opus 5.5), independent | until approved |
+| `sol-loop` | Codex (GPT-6.1 Sol), one at a time | until approved |
+| `council` | Codex (GPT-6.1 Sol), Claude Code (Claude Opus 5.5) and Antigravity (Gemini 4 Neon Medium), independent and in parallel | until approved |
 | `full-stop` | Uses `sol-loop`, then files and watches a PR | n/a |
 
 Invoke each one explicitly. A closing phrase such as "full stop" does not
@@ -253,6 +269,42 @@ herdr-review-cleanup snapshots --conversation <uuid> --yes       # delete snapsh
   write; that is a blocking dialog and is never answered for it.
 - Dedicated sessions end with the session that launched them unless started with
   `--outlive-parent`.
+
+## Reviewers over ACP
+
+Each round is one `herdr-review-acp review` process per reviewer. The executor, not the
+prompt, enforces the rules:
+
+- The snapshot (`herdr-review-acp snapshot`) must be read-only everywhere and contain no
+  link leaving it; its content fingerprint must be identical after the turn, or the round
+  is `tampered`. The snapshot keeps the same path every round, because an agent keeps its
+  session by working folder.
+- The agent must confirm the read-only mode and the model before any prompt, or it is
+  `unavailable`. Codex runs `read-only`, Claude `plan`, Antigravity `default`, OpenCode `plan`.
+- Only reads and the review tool are allowed; every other permission request is rejected
+  and none is ever allowed "always".
+- The review is accepted only through `submit_review` (verdict, a `summary` of at most 500
+  characters, findings). Conversation and round come from the server, not the model, and
+  the first valid submission wins.
+- Codex and Claude run with a private config folder holding only the login (a link), so
+  personal MCP servers, skills and instruction files do not reach the reviewer. It is
+  cleaned of instruction and config entries on every open and removed with the snapshot.
+- The agent's processes are ended before the verdict, and a change to the snapshot while
+  shutting down counts as tampering.
+
+The result status is `reviewed` only when a review arrived, the turn ended normally and
+the snapshot is unchanged. `unavailable`, `timeout`, `tampered`, `unverified`,
+`agent_error`, `incomplete`, `refused_action` and `no_review` are never approvals.
+
+`herdr-review-acp check` runs a short script per reviewer. It reports `verified` only when
+the agent made a forbidden attempt and the policy rejected the permission request;
+`unexercised` when nothing was violated but the agent simply declined (which models
+often do), and `failed` otherwise. ACP carries no structured "denied by policy" result for
+a tool call, so a failed call is never taken as proof.
+
+With `--log` the executor writes the same records as `herdr-review-send`. The reviewer's
+session is kept per conversation, so the next round continues it, and for Codex and Claude
+a `session_end` record holds the resume command that the panel's "Resume session" runs.
 
 ## Review contract
 
@@ -431,10 +483,17 @@ at another file.
 - **`herdr-app check` fails:** fix what it reports and run it again.
 - **Layout does not load:** it references other mods by name; make sure each
   one is installed (`herdr-app status` shows errors).
-- **Uncertain delivery:** read the target with `hc read` before resending.
+- **Uncertain delivery (terminal reviewers):** read the target with `hc read` before resending.
+- **A reviewer is `unavailable`:** the result's `reason` says why: a missing adapter or
+  login, a mode or model the agent would not confirm, or a snapshot that is not
+  read-only. `herdr-review-acp agents` and `check` narrow it down.
+- **No "Resume session" button:** it exists for Codex and Claude reviewers while the
+  snapshot and the conversation's private profile exist; `herdr-review-cleanup snapshots`
+  removes both.
 
 ## Status
 
-The workflow has been used for real reviews, but there is no automated
-end-to-end test: the tests cover the logger. Model comparisons are not part of
+The workflow has been used for real reviews. The tests cover the logger, the cleanup, the
+messaging scripts and the ACP executor (against a scripted agent); there is no automated
+end-to-end test with the real agents, which `herdr-review-acp check` exercises on demand. Model comparisons are not part of
 the workflow.

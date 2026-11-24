@@ -17,14 +17,20 @@ Safety rules, all enforced here rather than by asking the model nicely:
     so personal MCP servers, skills and CLAUDE.md files do not reach the reviewer;
   * the child process group is ended when the round finishes.
 
-Commands: `review`, `check`, `agents`, `forget`, `mcp-server` (internal).
+Commands: `snapshot`, `review`, `check`, `agents`, `forget`, `mcp-server` (internal).
+
+With `--log`, `review` also writes what the Reviews panel shows: the brief before it runs, the delivery, the review
+as a reply bubble, and (Codex and Claude) a `session_end` record whose resume command points the harness at the
+conversation's private profile. A session's id is kept per conversation and agent, so the next round continues it.
 """
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
 import queue
+import re
 import shutil
 import signal
 import stat
@@ -50,12 +56,16 @@ INSTALL_HINT = ("npm install --prefix {dir} --ignore-scripts --omit=optional "
 # Reviewer ids -> how to start and confirm them. `config` entries are confirmed with
 # `session/set_config_option` and must read back; the model is optional per harness.
 AGENTS = {
-    "sol": {"harness": "codex", "label": "GPT-6.1 Sol", "mode": "read-only", "config": {"model": "gpt-6.1-sol"}},
-    "opus": {"harness": "claude", "label": "Claude Opus 5.5", "mode": "plan", "config": {"model": "opus"}},
-    "neon": {"harness": "agy", "label": "Gemini 4 Neon (Medium)", "mode": "default",
+    "sol": {"harness": "codex", "short": "Sol", "label": "GPT-6.1 Sol", "mode": "read-only", "config": {"model": "gpt-6.1-sol"}},
+    "opus": {"harness": "claude", "short": "Opus", "label": "Claude Opus 5.5", "mode": "plan", "config": {"model": "opus"}},
+    "neon": {"harness": "agy", "short": "Neon", "label": "Gemini 4 Neon Medium", "mode": "default",
              "config": {"model": "gemini-4-neon", "thought_level": "medium"}},
-    "opencode": {"harness": "opencode", "label": "OpenCode", "mode": "plan", "config": {}},
+    "opencode": {"harness": "opencode", "short": "OpenCode", "label": "OpenCode", "mode": "plan", "config": {}},
 }
+SNAPSHOT_MARK = ".tstack-snapshot"
+SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# Flags a resumed reviewer keeps, so it stays read-only (mirrors herdr_review_log.RESUME_FLAGS).
+CLAUDE_NO_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit", "Task", "Agent"]
 
 
 class Unavailable(Exception):
@@ -613,6 +623,207 @@ def run_review(agent, snapshot, brief, conversation, round_number, session_id=No
     return result
 
 
+# ---------------------------------------------------------------- snapshots, sessions and the review log
+
+def review_root():
+    return Path(os.environ.get("TSTACK_REVIEW_ROOT", Path.home() / ".cache" / "tstack-review"))
+
+
+def make_snapshot(repo, head, conversation):
+    """Export `head` of `repo` as a read-only folder, always at the same path for this conversation.
+
+    The path is stable on purpose: an agent keeps its session by working folder, so the next round must reuse the
+    folder with new contents. Only a folder this function made (it carries a mark naming the conversation) is replaced."""
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise ValueError("head must be a full 40-character commit id")
+    uuid.UUID(conversation)
+    found = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", f"{head}^{{commit}}"], capture_output=True, text=True)
+    if found.returncode != 0 or found.stdout.strip() != head:
+        raise ValueError(f"{head} is not a commit of {repo}")
+    root = review_root()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"tstack-review-{conversation[:8]}"
+    if path.is_symlink():
+        raise ValueError(f"{path} is a symlink")
+    if path.exists():
+        mark = path / SNAPSHOT_MARK
+        if mark.is_symlink() or not mark.is_file() or mark.read_text().strip() != conversation:
+            raise ValueError(f"{path} exists and is not a snapshot of this conversation; not replacing it")
+        make_writable(path)
+        shutil.rmtree(path)
+    path.mkdir()
+    archive = subprocess.Popen(["git", "-C", str(repo), "archive", head], stdout=subprocess.PIPE)
+    unpack = subprocess.run(["tar", "-x", "-C", str(path)], stdin=archive.stdout, capture_output=True)
+    archive.stdout.close()
+    if archive.wait() != 0 or unpack.returncode != 0:
+        make_writable(path)
+        shutil.rmtree(path, ignore_errors=True)
+        raise ValueError(f"could not export {head}: {unpack.stderr.decode(errors='replace')[:200]}")
+    (path / SNAPSHOT_MARK).write_text(conversation + "\n")
+    make_read_only(path)
+    return path
+
+
+def walk_entries(path):
+    yield str(path)
+    for directory, names, files in os.walk(path):
+        for name in names + files:
+            yield os.path.join(directory, name)
+
+
+def make_read_only(path):
+    for entry in walk_entries(path):
+        if not os.path.islink(entry):
+            os.chmod(entry, os.lstat(entry).st_mode & ~0o222)
+
+
+def make_writable(path):
+    for entry in walk_entries(path):
+        if not os.path.islink(entry):
+            os.chmod(entry, os.lstat(entry).st_mode | 0o700)
+
+
+def session_file(conversation, agent):
+    return profiles_dir() / conversation / f"{agent}.session"
+
+
+def read_session(conversation, agent):
+    try:
+        text = session_file(conversation, agent).read_text().strip()
+    except OSError:
+        return None
+    return text if SESSION_ID.fullmatch(text) else None
+
+
+def write_session(conversation, agent, session_id):
+    if not SESSION_ID.fullmatch(session_id or ""):
+        return
+    path = session_file(conversation, agent)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    path.write_text(session_id + "\n")
+
+
+def resume_command(agent, spec, conversation, session_id):
+    """argv for reopening this reviewer read-only in a terminal (Codex and Claude only), or None."""
+    profile = profiles_dir() / conversation / spec["harness"]
+    model = spec["config"].get("model")
+    if spec["harness"] == "codex":
+        return ["env", f"CODEX_HOME={profile}", "codex", "resume", session_id, "--no-daemon", *(["--model", model] if model else []),
+                "--sandbox", "read-only", "--ask-for-approval", "never"]
+    if spec["harness"] == "claude":
+        return ["env", f"CLAUDE_CONFIG_DIR={profile}", "claude", "--permission-mode", "plan", "--disallowedTools", *CLAUDE_NO_TOOLS,
+                *(["--model", model] if model else []), "--resume", session_id]
+    return None
+
+
+def render_review(review):
+    """The review as the Reviews panel shows it: the verdict on its own line, then one block per finding."""
+    lines = [review["verdict"], ""]
+    for finding in review["findings"]:
+        lines.append(f"- **{finding['id']}** — {finding['severity']} — {finding['location']}")
+        lines.append(f"  Impact: {finding['impact']}")
+        lines.append(f"  Scenario: {finding['scenario']}")
+        if finding.get("evidence"):
+            lines.append(f"  Evidence: {finding['evidence']}")
+        lines.append(f"  Fix: {finding['fix']}")
+    if not review["findings"]:
+        lines.append("No findings.")
+    return "\n".join(lines)
+
+
+def log_command():
+    here = Path(__file__)
+    for sibling in (here.with_name("herdr_review_log.py"), here.with_name("herdr-review-log")):
+        if sibling.exists():  # the log script that ships with this one, not whatever is first on PATH
+            return [sys.executable, str(sibling)]
+    found = shutil.which("herdr-review-log")
+    if not found:
+        raise ValueError("herdr-review-log was not found")
+    return [found]
+
+
+def log_append(record, log_file):
+    command = [*log_command(), "append"] + (["--file", str(log_file)] if log_file else [])
+    answer = subprocess.run(command, input=json.dumps(record), capture_output=True, text=True)
+    if answer.returncode != 0:
+        raise ValueError(f"log append failed: {answer.stderr.strip()}")
+
+
+def now():
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+DELIVERY_OF = {"unavailable": "unavailable", "timeout": "timeout"}
+
+
+class RoundLog:
+    """Writes one round's records for the Reviews panel. Fields mirror herdr-review-send."""
+
+    def __init__(self, args, agent, spec, sender_session):
+        self.args, self.agent, self.spec, self.session = args, agent, spec, sender_session
+        self.sender = f"{args.sender_name} / {sender_session}"
+        self.recipient = f"{spec['short']} / acp:{agent}"
+        self.base = {"conversation_id": args.conversation, "round": args.round, "repo": args.repo,
+                     "worktree": str(Path(args.snapshot).resolve()), "base_sha": args.base_sha, "head_sha": args.head_sha,
+                     "criteria": args.criteria or [], "evidence": args.evidence or []}
+        # One brief sent to several reviewers must be one bubble: the caller passes the same id to each.
+        self.group = args.group_message_id or str(uuid.uuid4())
+
+    def outgoing(self, brief):
+        extra = {"title": self.args.title, "summary": self.args.summary, "group_message_id": self.group}
+        try:  # where the task started; optional, never blocks
+            context = subprocess.run([*log_command(), "context"], capture_output=True, text=True)
+            if context.returncode == 0:
+                extra.update(json.loads(context.stdout))
+        except (OSError, ValueError):
+            pass
+        record = {**self.base, "event_id": str(uuid.uuid4()), "kind": "message", "direction": "outgoing", "sender": self.sender,
+                  "recipient": self.recipient, "sender_model": self.args.sender_model, "recipient_model": self.spec["label"],
+                  "source_session": self.session, "destination_session": f"acp:{self.agent}", "text": brief,
+                  "created_at": now(), "status": "pending", **extra}
+        log_append(record, self.args.log_file)  # logged before anything runs, as the review contract requires
+        self.event = record["event_id"]
+        return record["event_id"]
+
+    def after(self, result):
+        """Delivery, the reply bubble and the resume record. Returns the ids and any logging problems."""
+        done, problems = {"outgoing_event": self.event}, []
+        status = result["status"]
+        sent = status != "unavailable"
+        delivery = {**self.base, "event_id": str(uuid.uuid4()), "kind": "delivery", "related_event_id": self.event,
+                    "sender": self.sender, "recipient": self.recipient, "sender_model": self.args.sender_model,
+                    "recipient_model": self.spec["label"], "source_session": self.session, "destination_session": f"acp:{self.agent}",
+                    "created_at": now(), "status": "sent" if sent else "unavailable",
+                    "receipt": {"started": True, "status": "idle", "turn": self.args.round} if sent else None}
+        if status == "timeout":
+            delivery["status"] = "timeout"
+        elif status not in ("unavailable", "reviewed", "timeout"):
+            delivery["status"] = "error"
+        steps = [("delivery", delivery)]
+        if status == "reviewed":
+            review = result["review"]
+            reply = {**self.base, "event_id": str(uuid.uuid4()), "kind": "message", "direction": "incoming",
+                     "sender": self.recipient, "recipient": self.sender, "sender_model": self.spec["label"],
+                     "recipient_model": self.args.sender_model, "source_session": f"acp:{self.agent}",
+                     "destination_session": self.session, "text": render_review(review), "summary": review["summary"],
+                     "created_at": now(), "status": "received", "group_message_id": str(uuid.uuid4())}
+            steps.append(("incoming_event", reply))
+        command = resume_command(self.agent, self.spec, self.args.conversation, result.get("session_id") or "") if result.get("session_id") else None
+        if command:
+            steps.append(("session_end", {"event_id": str(uuid.uuid4()), "kind": "session_end", "conversation_id": self.args.conversation,
+                                          "session": f"acp:{self.agent}", "harness": self.spec["harness"],
+                                          "cwd": str(Path(self.args.snapshot).resolve()), "resume_argv": command, "created_at": now()}))
+        for name, record in steps:
+            try:
+                log_append(record, self.args.log_file)
+                if name == "incoming_event":
+                    done[name] = record["event_id"]
+            except (ValueError, OSError) as problem:
+                problems.append(f"{name}: {problem}")
+        return done, problems
+
+
 # ---------------------------------------------------------------- check
 
 CHECK_FILES = {"calculator.py": "def divide(a, b):\n    return a / b\n\ndef average(values):\n    return sum(values) / (len(values) - 1)\n"}
@@ -733,6 +944,44 @@ def forget(agent, snapshot, session_id, conversation):
 
 # ---------------------------------------------------------------- command line
 
+LOG_REQUIRED = ("repo", "base_sha", "head_sha", "title", "summary", "sender_name", "sender_model")
+
+
+def cmd_review(args, spec=None):
+    """One logged round. Returns (result, exit code). The session of an earlier round is continued automatically."""
+    brief = Path(args.brief_file).read_text(encoding="utf-8")
+    uuid.UUID(args.conversation)
+    spec = spec or AGENTS[args.agent]
+    logger = None
+    if args.log:
+        missing = [f"--{name.replace('_', '-')}" for name in LOG_REQUIRED if not getattr(args, name)]
+        if missing:
+            raise ValueError(f"--log needs {', '.join(missing)}")
+        sender_session = os.environ.get("HC_TERMINAL_ID")
+        if not sender_session:
+            raise ValueError("--log needs HC_TERMINAL_ID (run inside a Herdr terminal)")
+        if args.group_message_id:
+            uuid.UUID(args.group_message_id)
+        logger = RoundLog(args, args.agent, spec, sender_session)
+        logger.outgoing(brief)
+    session, note = args.session, None
+    if not session and args.round > 1:
+        session = read_session(args.conversation, args.agent)
+        if not session:
+            note = "no session from an earlier round was found; this reviewer starts without its earlier context"
+    result = run_review(args.agent, args.snapshot, brief, args.conversation, args.round, session, args.timeout, spec=spec)
+    if note:
+        result["warnings"].append(note)
+    if result.get("session_id") and result["status"] != "unavailable":
+        write_session(args.conversation, args.agent, result["session_id"])
+    if logger:
+        done, problems = logger.after(result)
+        result["logged"] = done
+        if problems:
+            result["warnings"].append("not logged: " + "; ".join(problems))
+    return result, 0 if result["status"] == "reviewed" else 2
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -744,6 +993,22 @@ def main(argv=None):
     review.add_argument("--round", type=int, required=True)
     review.add_argument("--session", help="resume this ACP session id")
     review.add_argument("--timeout", type=int, default=900)
+    review.add_argument("--log", action="store_true", help="write the round to the review log for the Reviews panel")
+    review.add_argument("--log-file")
+    review.add_argument("--repo", help="owner/repo, for the log")
+    review.add_argument("--base-sha")
+    review.add_argument("--head-sha")
+    review.add_argument("--title", help="short human title of the task")
+    review.add_argument("--summary", help="friendly one or two sentences about this request, at most 500 characters")
+    review.add_argument("--sender-name")
+    review.add_argument("--sender-model")
+    review.add_argument("--group-message-id", help="share one id between reviewers that get the same brief (one bubble in the panel)")
+    review.add_argument("--criteria", action="append")
+    review.add_argument("--evidence", action="append")
+    snap = commands.add_parser("snapshot", help="export a commit as a read-only folder at a stable path for this conversation")
+    snap.add_argument("--repo", required=True, help="path of the git repository")
+    snap.add_argument("--head", required=True, help="full commit id")
+    snap.add_argument("--conversation", required=True)
     check = commands.add_parser("check", help="conformance script for each reviewer (spends a few tokens)")
     check.add_argument("--agent", action="append", choices=sorted(AGENTS))
     commands.add_parser("agents", help="list reviewers and whether they can start")
@@ -779,15 +1044,20 @@ def main(argv=None):
         return 0 if all(r["passed"] for r in reports) else 2
     if args.command == "forget":
         return 0 if forget(args.agent, Path(args.snapshot), args.session, args.conversation) else 2
+    if args.command == "snapshot":
+        try:
+            print(make_snapshot(args.repo, args.head, args.conversation))
+        except (OSError, ValueError) as problem:
+            print(f"error: {problem}", file=sys.stderr)
+            return 1
+        return 0
     try:
-        brief = Path(args.brief_file).read_text(encoding="utf-8")
-        uuid.UUID(args.conversation)
+        result, code = cmd_review(args)
     except (OSError, ValueError) as problem:
         print(f"error: {problem}", file=sys.stderr)
         return 1
-    result = run_review(args.agent, args.snapshot, brief, args.conversation, args.round, args.session, args.timeout)
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0 if result["status"] == "reviewed" else 2
+    return code
 
 
 if __name__ == "__main__":

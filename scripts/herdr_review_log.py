@@ -59,6 +59,26 @@ def check_snapshot_cwd(cwd):
         raise ValueError(f"cwd must be a plain folder directly under the review root {root}")
 
 
+# An ACP reviewer's history lives in a private config folder that herdr-review-acp made for the conversation, so
+# resuming it means pointing the harness at that folder: `env NAME=<profile> <harness> ...`. Nothing else may be set.
+RESUME_HOME = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR"}
+
+
+def split_resume_env(argv, conversation):
+    """(harness, argv without the env prefix). The prefix must be exactly the conversation's private profile."""
+    if argv[:1] != ["env"]:
+        return argv[0], argv
+    if len(argv) < 4 or argv[2] not in RESUME_HOME:
+        raise ValueError("resume_argv with env must be: env <NAME>=<private profile> codex|claude ...")
+    harness = argv[2]
+    name, _, profile = argv[1].partition("=")
+    expected = review_root() / "acp-profiles" / conversation / harness
+    real = Path(os.path.realpath(review_root())) / "acp-profiles" / conversation / harness
+    if name != RESUME_HOME[harness] or profile != str(expected) or Path(os.path.realpath(profile)) != real:
+        raise ValueError(f"resume_argv must set {RESUME_HOME[harness]} to this conversation's private profile {expected}")
+    return harness, argv[2:]
+
+
 def parse_flags(tokens, allowed):
     """Group tokens into {flag: [values]} using an allowlist; reject unknown, duplicate or stray tokens."""
     found, index = {}, 0
@@ -135,9 +155,10 @@ def validate(record):
         argv = record["resume_argv"]
         if not isinstance(argv, list) or not argv or any(not isinstance(item, str) or not item for item in argv):
             raise ValueError("resume_argv must be a non-empty list of strings")
-        if record["harness"] not in {"claude", "codex"} or argv[0] != record["harness"]:
+        harness, command = split_resume_env(argv, record["conversation_id"])
+        if record["harness"] not in {"claude", "codex"} or harness != record["harness"]:
             raise ValueError("resume_argv must start with the claude or codex harness")
-        validate_resume_argv(record["harness"], argv)
+        validate_resume_argv(record["harness"], command)
         check_snapshot_cwd(record["cwd"])
         return
     if kind == "read":

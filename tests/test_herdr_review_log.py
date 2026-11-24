@@ -139,6 +139,79 @@ class ReviewLogTests(unittest.TestCase):
                     with self.assertRaises(ValueError, msg=bad):
                         validate(self.session_end(codex, cwd=bad))
 
+    def acp_end(self, root, conversation, argv, harness="codex"):
+        record = self.session_end(argv, harness, cwd=str(root / "snap"))
+        record["conversation_id"] = conversation
+        return record
+
+    def test_session_end_accepts_the_private_profile_resume_of_an_acp_reviewer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "root"
+            conversation = str(uuid.uuid4())
+            (root / "snap").mkdir(parents=True)
+            codex_home = root / "acp-profiles" / conversation / "codex"
+            claude_home = root / "acp-profiles" / conversation / "claude"
+            codex_home.mkdir(parents=True)
+            claude_home.mkdir(parents=True)
+            codex = ["env", f"CODEX_HOME={codex_home}", "codex", "resume", "abc", "--sandbox", "read-only"]
+            claude = ["env", f"CLAUDE_CONFIG_DIR={claude_home}", "claude", "--permission-mode", "plan", "--resume", "abc"]
+            with mock.patch.dict(os.environ, {"TSTACK_REVIEW_ROOT": str(root)}):
+                validate(self.acp_end(root, conversation, codex))
+                validate(self.acp_end(root, conversation, claude, "claude"))
+                for bad in (
+                    ["env", f"CODEX_HOME={root}/acp-profiles/{uuid.uuid4()}/codex", "codex", "resume", "abc", "--sandbox", "read-only"],
+                    ["env", f"CODEX_HOME={codex_home}/..", "codex", "resume", "abc", "--sandbox", "read-only"],
+                    ["env", f"CLAUDE_CONFIG_DIR={codex_home}", "codex", "resume", "abc", "--sandbox", "read-only"],
+                    ["env", "CODEX_HOME=/etc", "codex", "resume", "abc", "--sandbox", "read-only"],
+                    ["env", f"CODEX_HOME={codex_home}", "bash", "-c", "x"],
+                    ["env", f"CODEX_HOME={codex_home}", "codex", "resume", "abc", "--sandbox", "workspace-write"],
+                    ["env", f"CODEX_HOME={codex_home}", "codex", "resume"],
+                    ["env", f"CODEX_HOME={codex_home}"],
+                ):
+                    with self.assertRaises(ValueError, msg=bad):
+                        validate(self.acp_end(root, conversation, bad))
+                # a profile folder that is a link to somewhere else is refused
+                other = Path(temp) / "other"
+                other.mkdir()
+                codex_home.rmdir()
+                codex_home.symlink_to(other)
+                with self.assertRaises(ValueError):
+                    validate(self.acp_end(root, conversation, codex))
+
+    def test_the_panel_agrees_with_the_validator_on_every_resume_form(self):
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed")
+        source = (Path(__file__).resolve().parent.parent / "herdr-app/mods/tstack-herdr-review/main.js").read_text()
+        start = source.index("const RESUME_FLAGS")
+        end = source.index("// ---- Task (conversation) model")
+        script = source[start:end] + "\nconst cases = JSON.parse(process.argv[1]);\nconsole.log(JSON.stringify(cases.map((c) => safeResume(c.end, c.root))));"
+        root = "/tmp/rr"
+        conversation = str(uuid.uuid4())
+        cwd = f"{root}/snap"
+        good = [
+            ["codex", "resume", "abc", "--sandbox", "read-only"],
+            ["claude", "--permission-mode", "plan", "--resume", "abc"],
+            ["env", f"CODEX_HOME={root}/acp-profiles/{conversation}/codex", "codex", "resume", "abc", "--sandbox", "read-only"],
+            ["env", f"CLAUDE_CONFIG_DIR={root}/acp-profiles/{conversation}/claude", "claude", "--permission-mode", "plan", "--resume", "abc"],
+        ]
+        bad = [
+            ["env", f"CODEX_HOME={root}/acp-profiles/{uuid.uuid4()}/codex", "codex", "resume", "abc", "--sandbox", "read-only"],
+            ["env", f"CODEX_HOME={root}/acp-profiles/{conversation}/codex/..", "codex", "resume", "abc", "--sandbox", "read-only"],
+            ["env", f"CLAUDE_CONFIG_DIR={root}/acp-profiles/{conversation}/codex", "codex", "resume", "abc", "--sandbox", "read-only"],
+            ["env", "CODEX_HOME=/etc", "codex", "resume", "abc", "--sandbox", "read-only"],
+            ["env", f"CODEX_HOME={root}/acp-profiles/{conversation}/codex", "bash", "-c", "x"],
+            ["env", f"CODEX_HOME={root}/acp-profiles/{conversation}/codex", "codex", "resume", "abc", "--sandbox", "workspace-write"],
+            ["env", f"CODEX_HOME={root}/acp-profiles/{conversation}/codex"],
+            ["codex", "resume", "abc", "--sandbox", "workspace-write"],
+        ]
+        cases = [{"root": root, "end": {"resume_argv": argv, "cwd": cwd, "conversation_id": conversation}} for argv in good + bad]
+        answer = subprocess.run([node, "--input-type=module", "-e", script, json.dumps(cases)], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(answer.stdout), [True] * len(good) + [False] * len(bad))
+
     def test_read_receipt(self):
         read = {"event_id": str(uuid.uuid4()), "kind": "read", "related_event_id": str(uuid.uuid4()),
                 "conversation_id": str(uuid.uuid4()), "reader": "t2x", "created_at": "2026-11-13T12:00:02Z"}

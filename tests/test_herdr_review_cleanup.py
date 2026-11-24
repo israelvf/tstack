@@ -7,7 +7,7 @@ from pathlib import Path
 
 from unittest import mock
 
-from scripts.herdr_review_cleanup import (claude_project_dir, classify_snapshots, delete_snapshot,
+from scripts.herdr_review_cleanup import (acp_profile_dir, claude_project_dir, delete_acp_profile, classify_snapshots, delete_snapshot,
                                           end_session, find_resume_id, resume_argv, snapshot_candidates)
 
 
@@ -40,6 +40,34 @@ class CleanupTests(unittest.TestCase):
                 os.chmod(item, 0o555 if item.is_dir() else 0o444)
             delete_snapshot(snap)
             self.assertFalse(snap.exists())
+
+    def test_acp_profile_is_removed_without_following_the_credential_link(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, conversation = Path(temp) / "root", str(uuid.uuid4())
+            real = Path(temp) / "real-auth.json"
+            real.write_text("secret")
+            folder = root / "acp-profiles" / conversation
+            (folder / "codex" / "sessions").mkdir(parents=True)
+            (folder / "codex" / "sessions" / "s.jsonl").write_text("history")
+            (folder / "codex" / "auth.json").symlink_to(real)
+            (folder / "sol.session").write_text("abc")
+            self.assertEqual(acp_profile_dir(root, conversation), folder)
+            delete_acp_profile(acp_profile_dir(root, conversation))
+            self.assertFalse(folder.exists())
+            self.assertEqual(real.read_text(), "secret")
+            self.assertTrue((root / "acp-profiles").is_dir())
+
+    def test_acp_profile_must_be_a_real_folder_directly_under_the_profiles_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, conversation = Path(temp) / "root", str(uuid.uuid4())
+            outside = Path(temp) / "outside"
+            outside.mkdir()
+            (outside / "keep.txt").write_text("mine")
+            (root / "acp-profiles").mkdir(parents=True)
+            (root / "acp-profiles" / conversation).symlink_to(outside)
+            self.assertIsNone(acp_profile_dir(root, conversation))
+            self.assertIsNone(acp_profile_dir(root, str(uuid.uuid4())))  # nothing there
+            self.assertEqual((outside / "keep.txt").read_text(), "mine")
 
     def test_candidates_come_from_the_requested_conversation_only(self):
         mine, other = str(uuid.uuid4()), str(uuid.uuid4())

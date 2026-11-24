@@ -45,7 +45,54 @@ run only when a real session of it was located and the send was observed; an
 installed skill shortcut or `agy` command does not prove integration or an
 automatic reply.
 
-## Authorized review sessions
+## Reviewers over ACP
+
+`sol-loop` and `council` run their reviewers with `herdr-review-acp`, which speaks the
+Agent Client Protocol to the reviewer as a child process. There is no terminal to
+launch, no `hc send`, no screen to read and no folder-trust dialog. Reviewers are `sol`
+(Codex), `opus` (Claude), `neon` (Gemini 4 Neon Medium through Antigravity) and
+`opencode`. Commands:
+
+- `herdr-review-acp snapshot --repo <repo> --head <sha> --conversation <uuid>`: a
+  read-only export of the commit at a stable path for the conversation; run it again each
+  round (same path, new contents).
+- `herdr-review-acp review --agent <id> --snapshot <path> --brief-file <file>
+  --conversation <uuid> --round <n> --log ...`: one round; prints a JSON result whose
+  `status` says whether there is a review (`reviewed`) or why not. `--summary` is the
+  friendly message the panel shows for your request. Pass the same `--group-message-id`
+  to every member that receives the same brief.
+- `herdr-review-acp check [--agent <id>]`: a conformance script; `agents`: which reviewers
+  can start; `forget`: delete one session from the agent's own history.
+
+What the executor enforces itself, instead of trusting the model: the snapshot must be
+read-only everywhere and unchanged afterwards; the read-only mode and model must be
+confirmed by the agent before any prompt; only reads and its own `submit_review` tool are
+allowed (anything else is rejected, never "always"); Codex and Claude run with a private
+config folder that holds only the login, so your MCP servers, skills and instruction
+files do not reach the reviewer; and the agent's processes are ended afterwards. The
+verdict arrives only through `submit_review`; free text is never parsed. A reviewer
+that declines a forbidden probe in `check` is `unexercised`, not `verified`: only a
+permission request that the policy rejected proves the policy.
+
+Setup on a new machine: the adapters are pinned and installed once with
+`npm install --prefix ~/.local/share/tstack-herdr/acp-adapters --ignore-scripts
+--omit=optional @agentclientprotocol/codex-acp@2.12.0
+@agentclientprotocol/claude-agent-acp@0.112.0` (override the folder with
+`TSTACK_ACP_ADAPTERS`). They use the `codex` and `claude` already on `PATH`, signed in
+as usual; the unscoped npm packages with similar names are not these.
+
+Each conversation has a private profile under `<review root>/acp-profiles/<uuid>/` with
+the reviewer's session history, and a session id per agent. A reviewer's history is
+therefore not in your normal `~/.codex` or `~/.claude`. The `session_end` record the
+executor logs holds a resume command of the form `env CODEX_HOME=<profile> codex resume
+...` (or `CLAUDE_CONFIG_DIR` for Claude) that keeps the read-only flags; the panel's
+"Resume session" runs only that exact form. Antigravity and OpenCode sessions have no
+resume command, and their config folders are not isolated yet.
+
+## Authorized review sessions (terminal fallback)
+
+The rest of this section applies to terminal reviewers, which `sol-loop` and `council` use only
+when the user asks for them or the executor cannot run.
 
 Only an explicit invocation of `sol-loop`, `council` or `full-stop` authorizes
 opening dedicated terminals for the named reviewers. Do not apply this exception
@@ -207,6 +254,9 @@ herdr-review-cleanup plan --conversation <uuid>
   snapshot still exists, the panel replaces "Open session" with "Resume session",
   which reopens the reviewer read-only with its full history. After any other
   outcome, keep the sessions and ask.
+- **ACP reviewers have no sessions to end.** Their history sits in the conversation's
+  private profile, which `herdr-review-cleanup snapshots --yes` removes together with the
+  snapshot (the credential link inside it is removed, never followed). `plan` lists it.
 - **Snapshots: never delete automatically; ask.** Tell the user plainly that
   deleting a snapshot makes it impossible to resume that reviewer later: the
   panel hides "Resume session", and resuming from another folder triggers trust

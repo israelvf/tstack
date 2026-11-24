@@ -10,7 +10,7 @@ existing `hc` sessions and do not require T3 Code.
 |---|---|---|
 | `full-send` | "full send" | Takes a change to a merged PR with nobody watching: proves it, reviews it, files it, babysits it, merges it. |
 | `full-stop` | Explicit `/full-stop` invocation | Proves, reviews, files and monitors a PR, then leaves merge to you. Does not call `full-send`. |
-| `council` | Explicit "council" request | On-demand independent Herdr review by Sol and Opus 5.5; as many rounds as needed for approval. |
+| `council` | Explicit "council" request | On-demand independent review by Sol, Opus 5.5 and Gemini 4 Neon Medium, run in parallel over ACP; as many rounds as needed for approval. |
 | `sol-loop` | Explicit "sol-loop" request | One Codex GPT-6.1 Sol reviewer at a time; as many rounds as needed for approval. |
 | `file-pr` | "file a PR" | Files a short PR that leads with the problem, not an inventory of changes. |
 | `takeover` | "take over" | Finishes someone else's PR, branch, or agent thread, and keeps their credit. |
@@ -41,9 +41,10 @@ cp -R tstack/skills/* ~/.gemini/antigravity/skills/ # agy
 
 - An authenticated [GitHub CLI](https://cli.github.com) (`gh`).
 - `python3` for `babysit-pr`'s `pr-wait` script.
-- `council` and `sol-loop` reuse only eligible Herdr sessions; an explicit
-  review invocation may launch a dedicated session in the harness's native
-  read-only mode when needed. Missing members are reported; no model is substituted.
+- `council` and `sol-loop` run their reviewers through `herdr-review-acp`, an
+  Agent Client Protocol executor: each reviewer is a child process confirmed to be in its
+  native read-only mode, and its review comes back as structured data. Missing members
+  are reported; no model is substituted. Terminal reviewers remain a fallback.
 - The OpenCode/Herdr workflows, local message log, native app panel, model
   configuration and install paths are documented in [docs/herdr-workflow.md](docs/herdr-workflow.md).
 

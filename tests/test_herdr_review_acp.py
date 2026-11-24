@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import subprocess
@@ -14,7 +15,7 @@ CONVERSATION = str(uuid.uuid4())
 
 
 def fake_spec(**env):
-    return {"harness": "test", "label": "Fake", "mode": "read-only", "config": {"model": "m1"},
+    return {"harness": "test", "short": "Fake", "label": "Fake", "mode": "read-only", "config": {"model": "m1"},
             "command": [sys.executable, FAKE], "env": env}
 
 
@@ -548,6 +549,252 @@ class CheckEvidenceTests(unittest.TestCase):
                     del os.environ["TSTACK_REVIEW_ROOT"]
                 else:
                     os.environ["TSTACK_REVIEW_ROOT"] = old
+
+
+class Env:
+    """Point the review root (snapshots, profiles) and HC_TERMINAL_ID at test values."""
+
+    def __init__(self, root, **extra):
+        self.values = {"TSTACK_REVIEW_ROOT": str(root), "HC_TERMINAL_ID": "t0t", **extra}
+
+    def __enter__(self):
+        self.old = dict(os.environ)
+        os.environ.update(self.values)
+
+    def __exit__(self, *exc):
+        os.environ.clear()
+        os.environ.update(self.old)
+
+
+def git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def make_repo(temp):
+    repo = Path(temp) / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "t")
+    (repo / "a.py").write_text("x = 1\n")
+    (repo / "sub").mkdir()
+    (repo / "sub" / "b.txt").write_text("b\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "one")
+    return repo
+
+
+class SnapshotCommandTests(unittest.TestCase):
+    def test_snapshot_is_read_only_marked_and_keeps_its_path_across_rounds(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo, conversation = make_repo(temp), str(uuid.uuid4())
+            first = git(repo, "rev-parse", "HEAD")
+            with Env(Path(temp) / "root"):
+                path = acp.make_snapshot(repo, first, conversation)
+                self.assertEqual(path.name, f"tstack-review-{conversation[:8]}")
+                self.assertEqual(acp.snapshot_problems(path), [])
+                self.assertEqual((path / "a.py").read_text(), "x = 1\n")
+                self.assertEqual((path / acp.SNAPSHOT_MARK).read_text().strip(), conversation)
+                acp.check_snapshot(path)
+                (repo / "a.py").write_text("x = 2\n")
+                git(repo, "commit", "-qam", "two")
+                again = acp.make_snapshot(repo, git(repo, "rev-parse", "HEAD"), conversation)
+                self.assertEqual(again, path)
+                self.assertEqual((path / "a.py").read_text(), "x = 2\n")
+                acp.check_snapshot(path)
+                acp.make_writable(path)
+
+    def test_it_refuses_bad_heads_and_folders_it_did_not_make(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo, conversation = make_repo(temp), str(uuid.uuid4())
+            head = git(repo, "rev-parse", "HEAD")
+            with Env(Path(temp) / "root"):
+                with self.assertRaises(ValueError):
+                    acp.make_snapshot(repo, "HEAD", conversation)
+                with self.assertRaises(ValueError):
+                    acp.make_snapshot(repo, "0" * 40, conversation)
+                stranger = acp.review_root() / f"tstack-review-{conversation[:8]}"
+                stranger.mkdir(parents=True)
+                (stranger / "keep.txt").write_text("mine")
+                with self.assertRaises(ValueError):
+                    acp.make_snapshot(repo, head, conversation)
+                self.assertEqual((stranger / "keep.txt").read_text(), "mine")
+                (stranger / "keep.txt").unlink()
+                stranger.rmdir()
+                outside = Path(temp) / "outside"
+                outside.mkdir()
+                stranger.symlink_to(outside)
+                with self.assertRaises(ValueError):
+                    acp.make_snapshot(repo, head, conversation)
+                self.assertTrue(outside.is_dir())
+
+
+class SessionAndRenderTests(unittest.TestCase):
+    def test_render_puts_the_verdict_on_its_own_line_then_the_findings(self):
+        text = acp.render_review(ReviewSchemaTests.GOOD)
+        self.assertEqual(text.splitlines()[0], "CHANGES_REQUESTED")
+        self.assertIn("- **F1** — high — a.py:1", text)
+        self.assertIn("  Fix: f", text)
+        self.assertEqual(acp.render_review({"verdict": "APPROVE", "summary": "ok", "findings": []}), "APPROVE\n\nNo findings.")
+
+    def test_session_ids_are_kept_per_conversation_and_agent_and_junk_is_ignored(self):
+        with tempfile.TemporaryDirectory() as temp, Env(temp):
+            conversation = str(uuid.uuid4())
+            self.assertIsNone(acp.read_session(conversation, "sol"))
+            acp.write_session(conversation, "sol", "abc-123")
+            acp.write_session(conversation, "sol", "../../etc/passwd")  # ignored, never written
+            self.assertEqual(acp.read_session(conversation, "sol"), "abc-123")
+            self.assertIsNone(acp.read_session(conversation, "opus"))
+            acp.session_file(conversation, "opus").write_text("bad id with spaces")
+            self.assertIsNone(acp.read_session(conversation, "opus"))
+            acp.drop_profiles(conversation)
+            self.assertIsNone(acp.read_session(conversation, "sol"))
+
+    def test_resume_commands_pass_the_real_validator_and_other_harnesses_have_none(self):
+        from scripts.herdr_review_log import validate
+        with tempfile.TemporaryDirectory() as temp, Env(Path(temp) / "root"):
+            conversation = str(uuid.uuid4())
+            (acp.review_root() / "snap").mkdir(parents=True)
+            for agent in ("sol", "opus"):
+                spec = acp.AGENTS[agent]
+                (acp.profiles_dir() / conversation / spec["harness"]).mkdir(parents=True, exist_ok=True)
+                command = acp.resume_command(agent, spec, conversation, "abc")
+                validate({"event_id": str(uuid.uuid4()), "kind": "session_end", "conversation_id": conversation, "session": f"acp:{agent}",
+                          "harness": spec["harness"], "cwd": str(acp.review_root() / "snap"), "resume_argv": command,
+                          "created_at": "2026-11-24T12:00:00Z"})
+            self.assertIsNone(acp.resume_command("neon", acp.AGENTS["neon"], conversation, "abc"))
+            self.assertIsNone(acp.resume_command("opencode", acp.AGENTS["opencode"], conversation, "abc"))
+
+
+def round_args(snapshot, log_file, conversation, round_number=1, brief="Review a.py.", **extra):
+    values = dict(agent="fake", snapshot=str(snapshot), brief_file=brief, conversation=conversation, round=round_number,
+                  session=None, timeout=20, log=True, log_file=str(log_file), repo="israelvf/tstack", base_sha="a" * 40,
+                  head_sha="b" * 40, title="Fake task", summary="Oi, pode revisar?", sender_name="Claude Code",
+                  sender_model="Claude Sonnet 5.5", criteria=["c"], evidence=["e"], group_message_id=None)
+    values.update(extra)
+    return argparse.Namespace(**values)
+
+
+class LoggedRoundTests(unittest.TestCase):
+    def records(self, log_file):
+        return [json.loads(line) for line in Path(log_file).read_text().splitlines()]
+
+    def test_a_round_writes_the_brief_the_delivery_and_the_reply_for_the_panel(self):
+        with tempfile.TemporaryDirectory() as temp, Env(Path(temp) / "root"):
+            conversation, log_file = str(uuid.uuid4()), Path(temp) / "state" / "messages.jsonl"
+            log_file.parent.mkdir()
+            snap = acp.review_root() / "snap"
+            snap.mkdir(parents=True)
+            (snap / "a.py").write_text("x = 1\n")
+            os.chmod(snap / "a.py", 0o444)
+            os.chmod(snap, 0o555)
+            brief = Path(temp) / "brief.txt"
+            brief.write_text("Please review a.py.")
+            try:
+                result, code = acp.cmd_review(round_args(snap, log_file, conversation, brief=str(brief)), spec=fake_spec(FAKE="submit"))
+            finally:
+                os.chmod(snap, 0o755)
+            self.assertEqual((code, result["status"]), (0, "reviewed"), result)
+            self.assertEqual(result["warnings"], [])
+            kinds = [(r["kind"], r.get("direction")) for r in self.records(log_file)]
+            self.assertEqual(kinds, [("message", "outgoing"), ("delivery", None), ("message", "incoming")])
+            outgoing, delivery, incoming = self.records(log_file)
+            self.assertEqual((outgoing["text"], outgoing["summary"], outgoing["title"]), ("Please review a.py.", "Oi, pode revisar?", "Fake task"))
+            self.assertEqual((delivery["related_event_id"], delivery["status"]), (outgoing["event_id"], "sent"))
+            self.assertEqual(incoming["summary"], "Achei um erro no denominador.")  # the fake agent's own summary, copied verbatim
+            self.assertEqual(incoming["text"].splitlines()[0], "CHANGES_REQUESTED")
+            self.assertEqual((incoming["source_session"], incoming["destination_session"]), ("acp:fake", "t0t"))
+            self.assertEqual(result["logged"]["outgoing_event"], outgoing["event_id"])
+            self.assertEqual(result["logged"]["incoming_event"], incoming["event_id"])
+
+    def test_the_session_continues_in_the_next_round_and_a_missing_one_is_reported(self):
+        with tempfile.TemporaryDirectory() as temp, Env(Path(temp) / "root"):
+            conversation, log_file = str(uuid.uuid4()), Path(temp) / "state" / "messages.jsonl"
+            log_file.parent.mkdir()
+            snap = acp.review_root() / "snap"
+            snap.mkdir(parents=True)
+            (snap / "a.py").write_text("x = 1\n")
+            os.chmod(snap / "a.py", 0o444)
+            os.chmod(snap, 0o555)
+            brief = Path(temp) / "brief.txt"
+            brief.write_text("Please review a.py.")
+            try:
+                first, _ = acp.cmd_review(round_args(snap, log_file, conversation, 1, str(brief)), spec=fake_spec(FAKE="submit"))
+                self.assertEqual(acp.read_session(conversation, "fake"), first["session_id"])
+                second, _ = acp.cmd_review(round_args(snap, log_file, conversation, 2, str(brief)), spec=fake_spec(FAKE="none"))
+                self.assertEqual(second["session_id"], first["session_id"])
+                self.assertEqual(second["warnings"], [])
+                other, _ = acp.cmd_review(round_args(snap, log_file, str(uuid.uuid4()), 2, str(brief)), spec=fake_spec(FAKE="none"))
+                self.assertTrue(any("no session from an earlier round" in w for w in other["warnings"]))
+            finally:
+                os.chmod(snap, 0o755)
+
+    def test_reviewers_that_get_the_same_brief_share_one_group_id(self):
+        with tempfile.TemporaryDirectory() as temp, Env(Path(temp) / "root"):
+            conversation, log_file, group = str(uuid.uuid4()), Path(temp) / "state" / "messages.jsonl", str(uuid.uuid4())
+            log_file.parent.mkdir()
+            snap = acp.review_root() / "snap"
+            snap.mkdir(parents=True)
+            for agent in ("sol", "opus"):
+                logger = acp.RoundLog(round_args(snap, log_file, conversation, group_message_id=group), agent, acp.AGENTS[agent], "t0t")
+                logger.outgoing("same brief")
+            outgoing = [r for r in self.records(log_file) if r.get("direction") == "outgoing"]
+            self.assertEqual({r["group_message_id"] for r in outgoing}, {group})
+            alone = acp.RoundLog(round_args(snap, log_file, conversation), "sol", acp.AGENTS["sol"], "t0t")
+            self.assertNotEqual(alone.group, group)
+
+    def test_a_round_that_cannot_be_logged_first_does_not_run(self):
+        with tempfile.TemporaryDirectory() as temp, Env(Path(temp) / "root"):
+            snap = acp.review_root() / "snap"
+            snap.mkdir(parents=True)
+            brief = Path(temp) / "brief.txt"
+            brief.write_text("x")
+            with self.assertRaises(ValueError):  # a log inside a git repository is refused by the log script
+                acp.cmd_review(round_args(snap, Path(__file__).parent / "messages.jsonl", str(uuid.uuid4()), brief=str(brief)),
+                               spec=fake_spec(FAKE="submit"))
+            self.assertFalse((Path(__file__).parent / "messages.jsonl").exists())
+
+    def test_log_needs_its_metadata_and_a_herdr_terminal(self):
+        with tempfile.TemporaryDirectory() as temp, Env(temp):
+            brief = Path(temp) / "brief.txt"
+            brief.write_text("x")
+            with self.assertRaisesRegex(ValueError, "--title"):
+                acp.cmd_review(round_args(temp, Path(temp) / "m.jsonl", str(uuid.uuid4()), brief=str(brief), title=None), spec=fake_spec())
+            del os.environ["HC_TERMINAL_ID"]
+            with self.assertRaisesRegex(ValueError, "HC_TERMINAL_ID"):
+                acp.cmd_review(round_args(temp, Path(temp) / "m.jsonl", str(uuid.uuid4()), brief=str(brief)), spec=fake_spec())
+
+    def test_the_reply_and_the_resume_record_are_logged_for_codex_and_claude(self):
+        with tempfile.TemporaryDirectory() as temp, Env(Path(temp) / "root"):
+            conversation, log_file = str(uuid.uuid4()), Path(temp) / "state" / "messages.jsonl"
+            log_file.parent.mkdir()
+            snap = acp.review_root() / "snap"
+            snap.mkdir(parents=True)
+            (acp.profiles_dir() / conversation / "codex").mkdir(parents=True)
+            args = round_args(snap, log_file, conversation)
+            logger = acp.RoundLog(args, "sol", acp.AGENTS["sol"], "t0t")
+            logger.outgoing("brief")
+            done, problems = logger.after({"status": "reviewed", "review": ReviewSchemaTests.GOOD, "session_id": "abc123"})
+            self.assertEqual(problems, [])
+            records = self.records(log_file)
+            self.assertEqual([r["kind"] for r in records], ["message", "delivery", "message", "session_end"])
+            end = records[-1]
+            self.assertEqual((end["session"], end["harness"], end["resume_argv"][0:3]), ("acp:sol", "codex", ["env", f"CODEX_HOME={acp.profiles_dir() / conversation / 'codex'}", "codex"]))
+            self.assertEqual(records[2]["source_session"], end["session"])  # the panel keys the resume button on this
+
+    def test_delivery_status_tells_the_panel_what_went_wrong(self):
+        for status, expected in (("timeout", "timeout"), ("unavailable", "unavailable"), ("tampered", "error"), ("no_review", "error"), ("agent_error", "error")):
+            with tempfile.TemporaryDirectory() as temp, Env(Path(temp) / "root"):
+                log_file = Path(temp) / "state" / "messages.jsonl"
+                log_file.parent.mkdir()
+                snap = acp.review_root() / "snap"
+                snap.mkdir(parents=True)
+                logger = acp.RoundLog(round_args(snap, log_file, str(uuid.uuid4())), "opencode", acp.AGENTS["opencode"], "t0t")
+                logger.outgoing("brief")
+                logger.after({"status": status, "review": None, "session_id": None})
+                records = self.records(log_file)
+                self.assertEqual([r["kind"] for r in records], ["message", "delivery"], status)
+                self.assertEqual(records[1]["status"], expected, status)
 
 
 class McpServerTests(unittest.TestCase):

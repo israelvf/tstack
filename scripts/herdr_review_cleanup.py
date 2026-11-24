@@ -85,6 +85,20 @@ def delete_snapshot(path):
     shutil.rmtree(path)
 
 
+def acp_profile_dir(root, conversation):
+    """The private ACP profile folder of a conversation, if it is a real folder directly under <root>/acp-profiles."""
+    folder = root.expanduser() / "acp-profiles" / conversation
+    base = root.expanduser().resolve() / "acp-profiles"
+    if folder.is_symlink() or not folder.is_dir() or folder.resolve().parent != base:
+        return None
+    return folder
+
+
+def delete_acp_profile(folder):
+    """Remove the folder and everything in it. Symlinks inside (the credential links) are removed, never followed."""
+    shutil.rmtree(folder)
+
+
 def hc_json(*args):
     result = subprocess.run(["hc", *args, "--json"], capture_output=True, text=True, check=False)
     if result.returncode != 0:
@@ -313,13 +327,17 @@ def main(argv=None):
                 "snapshots": [str(path) for path in deletable],
                 "skipped": [{"path": p, "reason": r} for p, r in skipped],
                 "sessions": dedicated_sessions(args.conversation),
+                "acp_profile": str(acp_profile_dir(args.root, args.conversation) or "") or None,
             }, indent=2))
         elif args.command == "snapshots":
             if not args.yes:
                 raise ValueError("deleting snapshots prevents resuming reviewer sessions; ask the user, then pass --yes")
             for path in deletable:
                 delete_snapshot(path)
-            print(json.dumps({"deleted": [str(path) for path in deletable],
+            profile = acp_profile_dir(args.root, args.conversation)  # the history of the ACP reviewers goes with the snapshots
+            if profile:
+                delete_acp_profile(profile)
+            print(json.dumps({"deleted": [str(path) for path in deletable], "deleted_acp_profile": str(profile) if profile else None,
                               "skipped": [{"path": p, "reason": r} for p, r in skipped]}))
         else:
             if not args.approved:

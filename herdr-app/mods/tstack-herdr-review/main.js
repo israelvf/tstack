@@ -24,7 +24,7 @@ function parseLog(raw) {
       // A dedicated reviewer session that was ended: how to resume it, read-only, from its snapshot.
       if (item.kind === "session_end" && typeof item.conversation_id === "string" && typeof item.session === "string"
         && typeof item.cwd === "string" && Array.isArray(item.resume_argv)
-        && ["claude", "codex"].includes(item.resume_argv[0])) ends.set(`${item.conversation_id}:${item.session}`, item);
+        && ["claude", "codex", "env"].includes(item.resume_argv[0])) ends.set(`${item.conversation_id}:${item.session}`, item);
       if (item.kind === "message" && ["incoming", "outgoing"].includes(item.direction)
         && typeof item.text === "string" && item.text.trim()
         && typeof item.conversation_id === "string" && Number.isInteger(item.round)
@@ -86,9 +86,25 @@ function parseFlags(tokens, allowed) {
   return found;
 }
 
-function safeResume(end, root) {
+// An ACP reviewer's history is in a private config folder, so its resume command is
+// `env NAME=<profile> codex|claude ...` with exactly that conversation's profile (mirrors split_resume_env()).
+const RESUME_HOME = { codex: "CODEX_HOME", claude: "CLAUDE_CONFIG_DIR" };
+
+function profileOf(end, root) {
   const argv = end?.resume_argv;
+  if (!Array.isArray(argv) || argv[0] !== "env") return null;
+  const home = RESUME_HOME[argv[2]];
+  if (!home || argv.length < 4 || typeof end.conversation_id !== "string" || !/^[0-9a-f-]{36}$/i.test(end.conversation_id)) return false;
+  const profile = `${root.replace(/\/$/, "")}/acp-profiles/${end.conversation_id}/${argv[2]}`;
+  return argv[1] === `${home}=${profile}` ? profile : false;
+}
+
+function safeResume(end, root) {
+  let argv = end?.resume_argv;
   if (!Array.isArray(argv) || argv.some((item) => typeof item !== "string" || !item)) return false;
+  const profile = profileOf(end, root);
+  if (profile === false) return false;
+  if (profile) argv = argv.slice(2);
   // A plain folder name directly under the root: rejects ".", "..", "//" and a trailing slash.
   const cut = typeof end.cwd === "string" ? end.cwd.lastIndexOf("/") : -1;
   if (cut < 0 || end.cwd.slice(0, cut) !== root.replace(/\/$/, "")
@@ -595,6 +611,11 @@ export default class TStackReviews extends View {
     };
     const [root, folder] = [await real(this.reviewRoot), await real(end.cwd)];
     if (!root || !folder || folder.slice(0, folder.lastIndexOf("/")) !== root) return null;
+    const profile = profileOf(end, this.reviewRoot);
+    if (profile) { // the private profile must be a real folder too, not a link to someone else's settings
+      const [home, folder2] = [await real(profile), `${root}/acp-profiles/${end.conversation_id}/${end.resume_argv[2]}`];
+      if (home !== folder2) return null;
+    }
     const isDir = await exec("test", ["-d", folder], { timeout: 3000 }).catch(() => ({ code: 1 }));
     return isDir.code === 0 ? folder : null;
   }
