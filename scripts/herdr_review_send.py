@@ -139,9 +139,17 @@ def send_one(args, text, recipient, group, extra, sender_session):
 
 
 def with_header(text, conversation, round_number):
-    """Make sure the request names its conversation and round, which is how last-reply finds the right turn."""
-    header = f"Conversation: {conversation}, round {round_number}"
-    return text if re.search(rf"{re.escape(header)}(?!\d)", text) else f"{text.rstrip()}\n\n{header}"
+    """Make sure the request carries its header ("Conversation: <uuid>, round <n>" on its own line).
+
+    A request that already has a header for another round of this conversation is refused rather than
+    rewritten, because the reply could no longer be told apart from the other round's.
+    """
+    rounds = header_rounds(text, conversation)
+    if rounds == {round_number}:
+        return text
+    if rounds:
+        raise ValueError(f"the brief already names round {sorted(rounds)} of this conversation, not round {round_number}")
+    return f"{text.rstrip()}\n\nConversation: {conversation}, round {round_number}"
 
 
 def send_messages(args, text):
@@ -174,6 +182,17 @@ def send_messages(args, text):
 # hard-wrapped). Codex and Claude Code both record the final message of every turn in their own history, with
 # the exact text, so the reply is read from there. Only the final message is read: no tool calls or output.
 
+# The header every request carries, alone on its line. Mentions inside the body ("Previous request: Conversation:
+# ...") are not headers, so an old round named in a brief cannot be mistaken for the round being asked.
+HEADER = re.compile(r"^[ \t]*Conversation:[ \t]*([0-9a-fA-F-]{36}),[ \t]*round[ \t]*(\d+)[ \t]*$", re.MULTILINE)
+SLACK_SECONDS = 5
+
+
+def header_rounds(text, conversation):
+    """The set of rounds the headers of `text` name for this conversation (empty: not a request for it)."""
+    return {int(number) for found, number in HEADER.findall(text) if found.lower() == conversation.lower()}
+
+
 def claude_project_dir(cwd):
     return Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", cwd)
 
@@ -185,65 +204,103 @@ def mentions(path, conversation):
         return False
 
 
-def find_session_file(harness, cwd, created_ms, conversation):
-    """The one history file of this harness, in `cwd`, that names the conversation: (path, None) or (None, reason)."""
-    floor = created_ms / 1000 - 5
-    spellings = {cwd, os.path.realpath(cwd)}
-    found = []
-    try:
-        if harness == "claude":
-            for spelling in spellings:
-                found += [path for path in claude_project_dir(spelling).glob("*.jsonl")
-                          if path.stat().st_mtime >= floor and mentions(path, conversation)]
-        else:
-            for name in glob.glob(str(Path.home() / ".codex" / "sessions" / "*" / "*" / "*" / "rollout-*.jsonl")):
-                path = Path(name)
-                if path.stat().st_mtime < floor or not mentions(path, conversation):
-                    continue
-                try:
-                    with path.open(encoding="utf-8") as handle:
-                        meta = json.loads(handle.readline()).get("payload", {})
-                except (OSError, ValueError):
-                    continue
-                if isinstance(meta, dict) and meta.get("cwd") in spellings:
-                    found.append(path)
-    except OSError:
-        return None, "session history unreadable"
-    found = sorted(set(found))
-    if len(found) == 1:
-        return found[0], None
-    return None, "session history not found" if not found else "more than one session history matches this conversation"
-
-
 def entries(path):
-    for line in path.open(encoding="utf-8"):
-        try:
-            yield json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    """The JSON objects of a history file; lines that are not objects are skipped."""
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict):
+                yield entry
+
+
+def as_dict(value):
+    return value if isinstance(value, dict) else {}
 
 
 def text_of(content):
     if isinstance(content, str):
         return content
-    return "".join(block.get("text", "") for block in content or []
-                   if isinstance(block, dict) and block.get("type") in ("text", "input_text", "output_text"))
+    if not isinstance(content, list):
+        return ""
+    return "".join(block["text"] for block in content if isinstance(block, dict)
+                   and block.get("type") in ("text", "input_text", "output_text") and isinstance(block.get("text"), str))
+
+
+def history_start(path):
+    """When this history began (seconds since the epoch), or None when it cannot be told."""
+    best = None
+    for index, entry in enumerate(entries(path)):
+        if index > 400:
+            break
+        stamp = entry.get("timestamp") or as_dict(entry.get("payload")).get("timestamp")
+        if isinstance(stamp, str):
+            try:
+                moment = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            best = moment if best is None else min(best, moment)
+    return best
+
+
+def find_session_file(harness, cwd, created_ms, finished_ms, conversation):
+    """The one history of this harness, in `cwd`, that names the conversation and belongs to this terminal.
+
+    A history belongs to the terminal when it began after the terminal was created (and, for an ended terminal,
+    before it ended); the file's modification time proves nothing, since another session in the same folder can
+    touch an old one. Histories whose start cannot be told are not trusted. Returns (path, None) or (None, reason).
+    """
+    floor = created_ms / 1000 - SLACK_SECONDS
+    ceiling = finished_ms / 1000 + SLACK_SECONDS if finished_ms else None
+    spellings = {cwd, os.path.realpath(cwd)}
+    candidates = []
+    try:
+        if harness == "claude":
+            for spelling in spellings:
+                candidates += list(claude_project_dir(spelling).glob("*.jsonl"))
+        else:
+            for name in glob.glob(str(Path.home() / ".codex" / "sessions" / "*" / "*" / "*" / "rollout-*.jsonl")):
+                path = Path(name)
+                try:
+                    first = next(entries(path), {})
+                except OSError:
+                    continue
+                if as_dict(first.get("payload")).get("cwd") in spellings:
+                    candidates.append(path)
+        found, unconfirmed = [], 0
+        for path in sorted(set(candidates)):
+            if path.stat().st_mtime < floor or not mentions(path, conversation):
+                continue
+            start = history_start(path)
+            if start is None:
+                unconfirmed += 1
+            elif start >= floor and (ceiling is None or start <= ceiling):
+                found.append(path)
+    except OSError:
+        return None, "session history unreadable"
+    if len(found) == 1:
+        return found[0], None
+    if found:
+        return None, "more than one session history matches this conversation"
+    return None, ("a history names this conversation but cannot be tied to this terminal" if unconfirmed
+                  else "session history not found")
 
 
 def final_reply(harness, path, conversation, round_number=None):
-    """The final message of the last turn that was started by a request naming this conversation (and round).
+    """The final message of the last turn that was started by a request headed for this conversation (and round).
 
     Returns (text, None) or (None, reason). A turn is a user message followed by the harness's messages; only a
     message the harness itself marks as final counts (Codex: phase final_answer, complete at task_complete;
     Claude Code: stop_reason end_turn), never the commentary written while it works.
     """
-    # The request header names both ("Conversation: <uuid>, round 2"); "round 2" alone also appears in later briefs.
-    marker = f"{conversation}, round {round_number}" if round_number else None
+    if round_number is not None and round_number < 1:
+        raise ValueError("the round must be a positive number")
     turns = []  # one dict per matching request, in order
     current = None
     for entry in entries(path):
-        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
-        message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        payload, message = as_dict(entry.get("payload")), as_dict(entry.get("message"))
         if harness == "codex":
             is_message = entry.get("type") == "response_item" and payload.get("type") == "message"
             role = payload.get("role") if is_message else None
@@ -256,7 +313,10 @@ def final_reply(harness, path, conversation, round_number=None):
             is_final = role == "assistant" and message.get("stop_reason") == "end_turn"
             turn_done = False
         if role == "user" and text.strip():
-            matches = re.search(rf"{re.escape(marker)}(?!\d)", text) is not None if marker else conversation in text
+            rounds = header_rounds(text, conversation)
+            if len(rounds) > 1:
+                return None, "a request has conflicting Conversation headers"
+            matches = bool(rounds) and (round_number is None or rounds == {round_number})
             current = {"reply": None, "complete": False} if matches else None
             if current:
                 turns.append(current)
@@ -273,6 +333,13 @@ def final_reply(harness, path, conversation, round_number=None):
     return (last["reply"], None) if last["complete"] else (None, "the reviewer's turn is not complete yet")
 
 
+def addressed_to(log_file, conversation, round_number):
+    """The sessions the log says this conversation's request (of this round, if given) was sent to."""
+    return {row.get("destination_session") for row in read_log(log_file)
+            if row.get("kind") == "message" and row.get("direction") == "outgoing"
+            and row.get("conversation_id") == conversation and (round_number is None or row.get("round") == round_number)}
+
+
 def reply_from_history(args):
     info = hc_json("get", args.session)
     argv = info.get("argv") or []
@@ -281,10 +348,18 @@ def reply_from_history(args):
         raise ValueError(f"{args.session} is not a claude or codex session; use hc read")
     if info.get("state") == "live" and (info.get("status") or {}).get("state") == "working":
         raise ValueError("the reviewer is still working; wait for it to finish")
-    path, reason = find_session_file(harness, info.get("cwd", ""), info.get("created_ms", 0), args.conversation)
+    # A history is tied to a terminal only by its start time, which cannot tell apart two terminals of one harness
+    # started within seconds in the same folder; when the log knows who the request went to, trust the log.
+    asked = addressed_to(args.file or default_log(), args.conversation, args.round) - {None}
+    if asked and info.get("address") not in asked:
+        raise ValueError(f"the log shows this request was sent to {', '.join(sorted(asked))}, not to {info.get('address')}")
+    path, reason = find_session_file(harness, info.get("cwd", ""), info.get("created_ms", 0), info.get("finished_ms"), args.conversation)
     if not path:
         raise ValueError(reason)
-    text, reason = final_reply(harness, path, args.conversation, args.round)
+    try:
+        text, reason = final_reply(harness, path, args.conversation, args.round)
+    except (TypeError, AttributeError, KeyError) as exc:  # a history in a shape we do not know
+        raise ValueError(f"the session history has an unexpected format ({type(exc).__name__})") from exc
     if text is None:
         raise ValueError(reason)
     return text
@@ -297,6 +372,7 @@ def receive_message(args, text):
         raise ValueError("receive needs --reader or HC_TERMINAL_ID")
     log_file = args.file or default_log()
     request = None
+    args.session = hc_json("get", args.session)["address"]  # the log records addresses, whatever the caller typed
     for row in read_log(log_file):
         if (row.get("kind") == "message" and row.get("direction") == "outgoing" and row.get("conversation_id") == args.conversation
                 and row.get("round") == args.round and row.get("destination_session") == args.session):
@@ -321,12 +397,19 @@ def receive_message(args, text):
     return {"recorded": True, "event_id": record["event_id"], "summary_found": bool(summary)}
 
 
+def positive(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive number")
+    return number
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=("send", "receive", "last-reply"))
     parser.add_argument("--file", type=Path, default=None, help="log file (default: the private XDG log)")
     parser.add_argument("--conversation", required=True, help="conversation UUID")
-    parser.add_argument("--round", type=int, help="round number (required for send and receive)")
+    parser.add_argument("--round", type=positive, help="round number, 1 or more (required for send and receive)")
     parser.add_argument("--text-file", type=Path, help="clean message text (UTF-8); for receive, or use --from-history")
     send = parser.add_argument_group("send")
     send.add_argument("--to", action="append", default=[], help="label=...,model=...,target=<hc address or name>; repeat per recipient")

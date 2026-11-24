@@ -319,8 +319,16 @@ herdr-review-send last-reply --conversation <uuid> --round <n> --session <addres
   while the reviewer works, tool calls and tool output are never read.
 - It refuses while the reviewer is working or the turn is incomplete, and when more
   than one history matches. It works for an ended session too.
-- It finds the turn by the line `Conversation: <uuid>, round <n>`; `send` adds it to a
-  request that lacks it.
+- It finds the turn by the header line `Conversation: <uuid>, round <n>` on a line of its
+  own (a mention of an earlier round inside the brief is not a header); `send` adds the
+  header to a request that lacks it and refuses a brief that already names another round.
+  A request whose headers name two rounds is refused.
+- A history is tied to a terminal by folder, conversation and start time (it must have
+  begun after the terminal was created, and before it ended); one that began earlier, or
+  whose start cannot be told, is refused. Two terminals of one harness started within
+  seconds in the same folder cannot be told apart, so a review does not start two of them
+  there; and when the log recorded where the request went, any other session is refused.
+  A session resumed with `--resume` continues an older history, so use `hc read` for it.
 - After `hc send`, `hc wait` can report `idle` or `done` from before the reviewer
   started. A reply is ready when `hc get` shows a `turn` greater than the one in the
   send receipt and a status that is not `working`.

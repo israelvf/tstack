@@ -156,12 +156,17 @@ class SendTests(unittest.TestCase):
         self.assertTrue(added.startswith("Please review.") and added.endswith(f"Conversation: {conv}, round 2"))
         already = f"Subject: x\n\nConversation: {conv}, round 2\nmore"
         self.assertEqual(send.with_header(already, conv, 2), already)
-        self.assertTrue(send.with_header(f"Conversation: {conv}, round 20", conv, 2).endswith(f"{conv}, round 2"))
         self.assertTrue(send.with_header(f"Conversation: {other}, round 2", conv, 2).endswith(f"{conv}, round 2"))
+        # a mention inside the body is not a header, so the real header is still added
+        mention = f"Previous request: Conversation: {conv}, round 1 was approved."
+        self.assertTrue(send.with_header(mention, conv, 2).endswith(f"Conversation: {conv}, round 2"))
+        # a header for another round of this conversation is refused, not silently rewritten
+        with self.assertRaisesRegex(ValueError, "already names round"):
+            send.with_header(f"Conversation: {conv}, round 20", conv, 2)
         _, records, sends = self.run_send(args(conversation=conv, round=2), text="No header here.")
         sent = [r["text"] for r in records if r["kind"] == "message"]
-        self.assertTrue(all(t.endswith(f"Conversation: {conv}, round 2") for t in sent))
-        self.assertEqual({t for t in sent}, {c[-1] for c in sends})  # what was logged is exactly what was sent
+        self.assertTrue(all(x.endswith(f"Conversation: {conv}, round 2") for x in sent))
+        self.assertEqual({x for x in sent}, {c[-1] for c in sends})  # what was logged is exactly what was sent
 
     def test_recipient_spec_must_be_complete(self):
         with self.assertRaisesRegex(ValueError, "missing"):
@@ -170,6 +175,7 @@ class SendTests(unittest.TestCase):
 
 class HistoryTests(unittest.TestCase):
     CONV = "11111111-2222-3333-4444-555555555555"
+    START = "2026-11-24T10:00:00Z"
 
     def jsonl(self, path, rows):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -177,7 +183,7 @@ class HistoryTests(unittest.TestCase):
         return path
 
     def codex_rows(self, cwd, turns):
-        rows = [{"type": "session_meta", "payload": {"id": "sid", "cwd": cwd}}]
+        rows = [{"type": "session_meta", "timestamp": self.START, "payload": {"id": "sid", "cwd": cwd, "timestamp": self.START}}]
         for brief, steps in turns:
             rows.append({"type": "response_item", "payload": {"type": "message", "role": "user",
                          "content": [{"type": "input_text", "text": brief}]}})
@@ -214,7 +220,7 @@ class HistoryTests(unittest.TestCase):
     def claude_rows(self, turns):
         rows = []
         for brief, steps in turns:
-            rows.append({"type": "user", "message": {"role": "user", "content": brief}})
+            rows.append({"type": "user", "timestamp": self.START, "message": {"role": "user", "content": brief}})
             for stop, text in steps:
                 rows.append({"type": "assistant", "message": {"role": "assistant", "stop_reason": stop,
                              "content": [{"type": "text", "text": text}] if text else [{"type": "tool_use", "name": "Read"}]}})
@@ -241,10 +247,107 @@ class HistoryTests(unittest.TestCase):
             canonical = str((real / "snap").resolve())
             mine = self.jsonl(send.claude_project_dir(canonical) / "mine.jsonl", self.claude_rows([(f"Conversation: {conv}, round 1", [])]))
             self.jsonl(send.claude_project_dir(canonical) / "other.jsonl", self.claude_rows([(f"Conversation: {uuid.uuid4()}, round 1", [])]))
-            self.assertEqual(send.find_session_file("claude", str(alias / "snap"), 0, conv), (mine, None))
+            self.assertEqual(send.find_session_file("claude", str(alias / "snap"), 0, None, conv), (mine, None))
             self.jsonl(send.claude_project_dir(canonical) / "twin.jsonl", self.claude_rows([(f"Conversation: {conv}, round 1", [])]))
-            self.assertIn("more than one", send.find_session_file("claude", canonical, 0, conv)[1])
-            self.assertIn("not found", send.find_session_file("codex", canonical, 0, conv)[1])
+            self.assertIn("more than one", send.find_session_file("claude", canonical, 0, None, conv)[1])
+            self.assertIn("not found", send.find_session_file("codex", canonical, 0, None, conv)[1])
+
+    def test_a_body_mention_of_an_earlier_round_is_not_a_header(self):
+        conv = self.CONV
+        rows = self.codex_rows("/s", [
+            (f"Subject: r1\n\nConversation: {conv}, round 1\n", [("final_answer", "APPROVE ROUND ONE"), ("done", "")]),
+            (f"Subject: r2\n\nPrevious request: Conversation: {conv}, round 1\nConversation: {conv}, round 2\n",
+             [("final_answer", "APPROVE ROUND TWO"), ("done", "")]),
+        ])
+        with tempfile.TemporaryDirectory() as temp:
+            path = self.jsonl(Path(temp) / "r.jsonl", rows)
+            self.assertEqual(send.final_reply("codex", path, conv, 1)[0], "APPROVE ROUND ONE")
+            self.assertEqual(send.final_reply("codex", path, conv, 2)[0], "APPROVE ROUND TWO")
+
+    def test_conflicting_headers_in_one_request_are_refused(self):
+        conv = self.CONV
+        rows = self.codex_rows("/s", [(f"Conversation: {conv}, round 1\nConversation: {conv}, round 2\n", [("final_answer", "X"), ("done", "")])])
+        with tempfile.TemporaryDirectory() as temp:
+            path = self.jsonl(Path(temp) / "r.jsonl", rows)
+            self.assertIn("conflicting", send.final_reply("codex", path, conv, 1)[1])
+
+    def test_a_history_that_began_before_the_terminal_or_after_it_ended_is_not_its_own(self):
+        import datetime, time
+        conv = self.CONV
+        created = int(time.time() * 1000) - 120000   # the terminal was created two minutes ago (ms)
+        iso = lambda seconds: datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).isoformat()
+        request = {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": f"Conversation: {conv}, round 1"}]}}
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            day = Path(home) / ".codex" / "sessions" / "2026" / "11" / "24"
+            before = iso(created / 1000 - 3600)      # another session's history, begun an hour before the terminal
+            old = self.jsonl(day / "rollout-old.jsonl", [{"type": "session_meta", "timestamp": before, "payload": {"id": "old", "cwd": "/snap", "timestamp": before}}, request])
+            # its modification time is "now", after the terminal was created, yet it does not belong to the terminal
+            self.assertIn("not found", send.find_session_file("codex", "/snap", created, None, conv)[1])
+            started = iso(created / 1000 + 30)
+            fresh = self.jsonl(day / "rollout-fresh.jsonl", [{"type": "session_meta", "timestamp": started, "payload": {"id": "fresh", "cwd": "/snap", "timestamp": started}}, request])
+            self.assertEqual(send.find_session_file("codex", "/snap", created, None, conv), (fresh, None))
+            # an ended terminal: a history that began long after it ended is not its own
+            self.assertIn("not found", send.find_session_file("codex", "/snap", created, created + 1000, conv)[1])
+            self.assertEqual(send.find_session_file("codex", "/snap", created, created + 60000, conv), (fresh, None))
+            self.assertTrue(old.exists())
+
+    def test_a_history_without_a_start_time_is_not_trusted(self):
+        conv = self.CONV
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            self.jsonl(send.claude_project_dir("/snap") / "x.jsonl", [{"type": "user", "message": {"content": f"Conversation: {conv}, round 1"}}])
+            self.assertIn("cannot be tied", send.find_session_file("claude", "/snap", 0, None, conv)[1])
+
+    def test_malformed_history_lines_never_raise(self):
+        conv = self.CONV
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "m.jsonl"
+            good = self.codex_rows("/s", [(f"Conversation: {conv}, round 1", [("final_answer", "APPROVE"), ("done", "")])])
+            bad = ["null", "[]", "7", "\"text\"", json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": 7}}),
+                   json.dumps({"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer", "content": [{"type": "output_text", "text": None}]}}),
+                   json.dumps({"type": "response_item", "payload": None}), "{not json"]
+            path.write_text("\n".join(json.dumps(r) for r in good) + "\n" + "\n".join(bad) + "\n")
+            self.assertEqual(send.final_reply("codex", path, conv, 1)[0], "APPROVE")
+            self.assertIsNotNone(send.history_start(path))
+
+    def test_round_zero_or_a_negative_round_is_refused(self):
+        conv = self.CONV
+        with tempfile.TemporaryDirectory() as temp:
+            path = self.jsonl(Path(temp) / "r.jsonl", self.codex_rows("/s", [(f"Conversation: {conv}, round 1", [("final_answer", "A"), ("done", "")])]))
+            for bad in (0, -1):
+                with self.assertRaisesRegex(ValueError, "positive"):
+                    send.final_reply("codex", path, conv, bad)
+        with self.assertRaises(SystemExit):
+            with mock.patch("sys.stderr"):
+                send.main(["last-reply", "--conversation", conv, "--session", "t1", "--round", "0"])
+
+    def test_receive_resolves_a_session_name_to_the_address_the_log_records(self):
+        conv = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as temp:
+            log = ReceiveTests().request_log(temp, conv)
+            records = []
+            a = types.SimpleNamespace(conversation=conv, round=1, session="tstack-review-sol-abc", reader="t9", file=log)
+            with mock.patch.object(send, "append", lambda r, l: records.append(r)), mock.patch.object(send, "hc_json", lambda *x: {"address": "t4"}):
+                send.receive_message(a, "Summary: ok\n\nAPPROVE")
+        self.assertEqual(records[0]["source_session"], "t4")
+
+    def test_the_log_decides_which_session_a_request_went_to(self):
+        conv = self.CONV
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / "messages.jsonl"
+            log.write_text(json.dumps({"kind": "message", "direction": "outgoing", "conversation_id": conv, "round": 1, "destination_session": "t4"}) + "\n")
+            info = {"address": "t5", "argv": ["claude"], "state": "finished", "cwd": "/s", "created_ms": 0}
+            a = types.SimpleNamespace(session="t5", conversation=conv, round=1, file=log)
+            with mock.patch.object(send, "hc_json", lambda *x: info):
+                with self.assertRaisesRegex(ValueError, "sent to t4, not to t5"):
+                    send.reply_from_history(a)
+                a.round = 2                      # nothing was logged for round 2, so the log has no say
+                with mock.patch.object(send, "find_session_file", return_value=(None, "session history not found")):
+                    with self.assertRaisesRegex(ValueError, "not found"):
+                        send.reply_from_history(a)
+            info["address"] = "t4"; a.round = 1  # the right session passes the log check
+            with mock.patch.object(send, "hc_json", lambda *x: info), mock.patch.object(send, "find_session_file", return_value=(Path("/x"), None)), \
+                    mock.patch.object(send, "final_reply", return_value=("OK", None)):
+                self.assertEqual(send.reply_from_history(a), "OK")
 
     def test_a_working_reviewer_and_a_non_agent_terminal_are_refused(self):
         a = types.SimpleNamespace(session="t1", conversation=self.CONV, round=1)
@@ -271,7 +374,7 @@ class ReceiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             records = []
             a = types.SimpleNamespace(conversation=conv, round=1, session="t4", reader="t9", file=self.request_log(temp, conv))
-            with mock.patch.object(send, "append", lambda r, l: records.append(r)):
+            with mock.patch.object(send, "append", lambda r, l: records.append(r)), mock.patch.object(send, "hc_json", lambda *x: {"address": "t4"}):
                 out = send.receive_message(a, "• Summary: Aprovei sem achados.\n\nAPPROVE")
         reply, receipt = records
         self.assertTrue(out["summary_found"])
@@ -287,7 +390,7 @@ class ReceiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             records = []
             a = types.SimpleNamespace(conversation=conv, round=1, session="t4", reader="t9", file=self.request_log(temp, conv))
-            with mock.patch.object(send, "append", lambda r, l: records.append(r)):
+            with mock.patch.object(send, "append", lambda r, l: records.append(r)), mock.patch.object(send, "hc_json", lambda *x: {"address": "t4"}):
                 send.receive_message(a, "CHANGES_REQUESTED\n\nR1 — Low — a.js:1")
         self.assertNotIn("summary", records[0])
         self.assertTrue(records[0]["text"].startswith("CHANGES_REQUESTED"))
@@ -295,7 +398,7 @@ class ReceiveTests(unittest.TestCase):
     def test_receive_needs_a_matching_request_in_the_log(self):
         with tempfile.TemporaryDirectory() as temp:
             a = types.SimpleNamespace(conversation=str(uuid.uuid4()), round=1, session="t4", reader="t9", file=Path(temp) / "none.jsonl")
-            with self.assertRaisesRegex(ValueError, "no outgoing request"):
+            with mock.patch.object(send, "hc_json", lambda *x: {"address": "t4"}), self.assertRaisesRegex(ValueError, "no outgoing request"):
                 send.receive_message(a, "APPROVE")
 
     def test_split_summary(self):

@@ -163,6 +163,14 @@ your request from the log, moves a leading `Summary:` line into the `summary` fi
   the line `Conversation: <uuid>, round <n>`, which `herdr-review-send send` adds to a
   request that lacks it. `herdr-review-send receive ... --from-history` reads and logs
   in one step. This works after the session has ended too.
+- **How a history is tied to a terminal.** Neither tool records which terminal wrote a
+  history, so `last-reply` uses the folder, the conversation named in the request and the
+  start time (the history must have begun after the terminal was created, and before it
+  ended). A history that began earlier, or whose start cannot be told, is refused. Two
+  terminals of the same harness started within seconds in the same folder cannot be told
+  apart this way, so do not start two reviewers of one harness in one folder; when the
+  log recorded where the request went, `last-reply` also refuses any other session.
+  Sessions resumed with `--resume` continue an older history, so for those use `hc read`.
 - **Do not rely on the screen.** `hc read` returns what the terminal viewport shows. If
   someone scrolled the pane, the harness can show its own scrollback with a banner such
   as "New activity · ↓ Back to bottom · esc" and the reply is simply not on screen; text

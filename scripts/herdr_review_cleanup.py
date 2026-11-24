@@ -116,40 +116,79 @@ def mentions(path, conversation):
         return False
 
 
-def find_resume_id(harness, cwd, created_ms, conversation):
-    """The one session of this harness in `cwd` whose history names this conversation.
+def history_start(path):
+    """When a session history began (seconds since the epoch), or None when it cannot be told."""
+    best = None
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for index, line in enumerate(handle):
+                if index > 400:
+                    break
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+                stamp = entry.get("timestamp") or payload.get("timestamp")
+                if isinstance(stamp, str):
+                    try:
+                        moment = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+                    except ValueError:
+                        continue
+                    best = moment if best is None else min(best, moment)
+    except OSError:
+        return None
+    return best
 
-    `hc` reports the folder as it was passed, but Claude Code and Codex key their sessions by the
-    canonical path, so both spellings are tried. Returns (id, None), or (None, reason) when there is
-    no match or more than one.
+
+def find_resume_id(harness, cwd, created_ms, conversation):
+    """The one session of this harness in `cwd` whose history names this conversation and began after the
+    terminal was created (a file's modification time proves nothing: another session in the same folder can
+    touch an old history).
+
+    `hc` reports the folder as it was passed, but Claude Code and Codex key their sessions by the canonical
+    path, so both spellings are tried. Returns (id, None), or (None, reason) when there is no match, no
+    confirmed one, or more than one.
     """
     floor = created_ms / 1000 - 5
     spellings = {cwd, os.path.realpath(cwd)}
-    matches = []
+    matches, unconfirmed = [], 0
+
+    def consider(path, identifier):
+        nonlocal unconfirmed
+        if path.stat().st_mtime < floor or not mentions(path, conversation):
+            return
+        start = history_start(path)
+        if start is None:
+            unconfirmed += 1
+        elif start >= floor:
+            matches.append(identifier)
+
     try:
         if harness == "claude":
             for spelling in spellings:
                 for path in claude_project_dir(spelling).glob("*.jsonl"):
-                    if path.stat().st_mtime >= floor and mentions(path, conversation):
-                        matches.append(path.stem)
+                    consider(path, path.stem)
         else:
             for name in glob.glob(str(Path.home() / ".codex" / "sessions" / "*" / "*" / "*" / "rollout-*.jsonl")):
                 path = Path(name)
-                if path.stat().st_mtime < floor or not mentions(path, conversation):
-                    continue
                 try:
                     with path.open(encoding="utf-8") as handle:
                         meta = json.loads(handle.readline()).get("payload", {})
-                except (OSError, ValueError):
+                except (OSError, ValueError, AttributeError):
                     continue
                 if isinstance(meta, dict) and meta.get("cwd") in spellings and meta.get("id"):
-                    matches.append(meta["id"])
+                    consider(path, meta["id"])
     except OSError:
         return None, "session store unreadable"
     matches = sorted(set(matches))
     if len(matches) == 1:
         return matches[0], None
-    return None, "resume id not found" if not matches else "more than one session matches this conversation"
+    if matches:
+        return None, "more than one session matches this conversation"
+    return None, "a history names this conversation but cannot be tied to this terminal" if unconfirmed else "resume id not found"
 
 
 def resume_argv(harness, argv, resume_id):

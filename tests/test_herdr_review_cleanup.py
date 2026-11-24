@@ -69,11 +69,12 @@ class CleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
             project = claude_project_dir(cwd)
             project.mkdir(parents=True)
-            (project / "mine.jsonl").write_text(f"Conversation: {mine}")
-            (project / "newer-other.jsonl").write_text(f"Conversation: {other}")
+            history = lambda conv: json.dumps({"type": "user", "timestamp": "2026-11-24T10:00:00Z", "message": {"content": f"Conversation: {conv}"}})
+            (project / "mine.jsonl").write_text(history(mine))
+            (project / "newer-other.jsonl").write_text(history(other))
             self.assertEqual(find_resume_id("claude", cwd, 0, mine), ("mine", None))
             self.assertEqual(find_resume_id("claude", cwd, 0, str(uuid.uuid4()))[0], None)
-            (project / "second.jsonl").write_text(f"Conversation: {mine}")
+            (project / "second.jsonl").write_text(history(mine))
             self.assertIn("more than one", find_resume_id("claude", cwd, 0, mine)[1])
 
     def test_resume_id_is_found_when_the_review_root_is_behind_a_symlink(self):
@@ -88,22 +89,34 @@ class CleanupTests(unittest.TestCase):
             canonical = str((real_root / "snap").resolve())  # what Claude and Codex key their sessions by
             claude_project = claude_project_dir(canonical)
             claude_project.mkdir(parents=True)
-            (claude_project / "claude-id.jsonl").write_text(f"Conversation: {conv}")
+            (claude_project / "claude-id.jsonl").write_text(json.dumps({"type": "user", "timestamp": "2026-11-24T10:00:00Z", "message": {"content": f"Conversation: {conv}"}}))
             day = Path(home) / ".codex" / "sessions" / "2026" / "11" / "24"
             day.mkdir(parents=True)
             (day / "rollout-x.jsonl").write_text(
-                json.dumps({"payload": {"cwd": canonical, "id": "codex-id"}}) + f"\nConversation: {conv}")
+                json.dumps({"timestamp": "2026-11-24T10:00:00Z", "payload": {"cwd": canonical, "id": "codex-id", "timestamp": "2026-11-24T10:00:00Z"}}) + f"\nConversation: {conv}")
             self.assertEqual(find_resume_id("claude", given, 0, conv), ("claude-id", None))
             self.assertEqual(find_resume_id("codex", given, 0, conv), ("codex-id", None))
             # the canonical path keeps working too
             self.assertEqual(find_resume_id("claude", canonical, 0, conv), ("claude-id", None))
+
+    def test_a_history_that_began_before_the_terminal_is_not_its_resume_id(self):
+        import time
+        conv = str(uuid.uuid4())
+        created = int(time.time() * 1000) - 120000   # created two minutes ago (ms)
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            project = claude_project_dir("/snap"); project.mkdir(parents=True)
+            old = json.dumps({"type": "user", "timestamp": "2026-01-01T00:00:00Z", "message": {"content": f"Conversation: {conv}"}})
+            (project / "stale.jsonl").write_text(old)   # modified now, but another session began it long before
+            self.assertEqual(find_resume_id("claude", "/snap", created, conv)[0], None)
+            (project / "undated.jsonl").write_text(json.dumps({"type": "user", "message": {"content": f"Conversation: {conv}"}}))
+            self.assertIn("cannot be tied", find_resume_id("claude", "/snap", created, conv)[1])
 
     def test_codex_resume_id_needs_matching_cwd_and_conversation(self):
         conv = str(uuid.uuid4())
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
             day = Path(home) / ".codex" / "sessions" / "2026" / "11" / "24"
             day.mkdir(parents=True)
-            meta = lambda cwd, sid: json.dumps({"payload": {"cwd": cwd, "id": sid}}) + f"\nConversation: {conv}"
+            meta = lambda cwd, sid: json.dumps({"timestamp": "2026-11-24T10:00:00Z", "payload": {"cwd": cwd, "id": sid, "timestamp": "2026-11-24T10:00:00Z"}}) + f"\nConversation: {conv}"
             (day / "rollout-a.jsonl").write_text(meta("/review/snap", "id-mine"))
             (day / "rollout-b.jsonl").write_text(meta("/review/other", "id-elsewhere"))
             self.assertEqual(find_resume_id("codex", "/review/snap", 0, conv), ("id-mine", None))
