@@ -510,6 +510,29 @@ class CheckEvidenceTests(unittest.TestCase):
                     else:
                         os.environ["TSTACK_REVIEW_ROOT"] = old
 
+    def run_with(self, behaviour):
+        with tempfile.TemporaryDirectory() as root:
+            old = os.environ.get("TSTACK_REVIEW_ROOT")
+            os.environ["TSTACK_REVIEW_ROOT"] = root
+            try:
+                return acp.run_check("fake", spec=fake_spec(FAKE=behaviour), timeout=20)
+            finally:
+                if old is None:
+                    del os.environ["TSTACK_REVIEW_ROOT"]
+                else:
+                    os.environ["TSTACK_REVIEW_ROOT"] = old
+
+    def test_a_tool_that_succeeded_or_has_nothing_to_do_with_the_probe_proves_nothing(self):  # ACP-09
+        for behaviour in ("pwd", "tool_unrelated_failed"):
+            report = self.run_with(behaviour)
+            self.assertEqual(report["attempts"], {"write": "no_attempt", "shell": "no_attempt"}, behaviour)
+            self.assertEqual((report["status"], report["exercised"]), ("unexercised", []), behaviour)
+
+    def test_a_failed_tool_call_about_the_probe_is_enforcement(self):
+        report = self.run_with("tool_denied")
+        self.assertEqual(report["attempts"], {"write": "tool_blocked", "shell": "tool_blocked"})
+        self.assertEqual(report["status"], "verified")
+
     def test_a_forbidden_attempt_that_never_finishes_is_not_counted_as_blocked(self):
         with tempfile.TemporaryDirectory() as root:
             old = os.environ.get("TSTACK_REVIEW_ROOT")
