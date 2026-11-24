@@ -119,15 +119,19 @@ def mentions(path, conversation):
 def find_resume_id(harness, cwd, created_ms, conversation):
     """The one session of this harness in `cwd` whose history names this conversation.
 
-    Returns (id, None), or (None, reason) when there is no match or more than one.
+    `hc` reports the folder as it was passed, but Claude Code and Codex key their sessions by the
+    canonical path, so both spellings are tried. Returns (id, None), or (None, reason) when there is
+    no match or more than one.
     """
     floor = created_ms / 1000 - 5
+    spellings = {cwd, os.path.realpath(cwd)}
     matches = []
     try:
         if harness == "claude":
-            for path in claude_project_dir(cwd).glob("*.jsonl"):
-                if path.stat().st_mtime >= floor and mentions(path, conversation):
-                    matches.append(path.stem)
+            for spelling in spellings:
+                for path in claude_project_dir(spelling).glob("*.jsonl"):
+                    if path.stat().st_mtime >= floor and mentions(path, conversation):
+                        matches.append(path.stem)
         else:
             for name in glob.glob(str(Path.home() / ".codex" / "sessions" / "*" / "*" / "*" / "rollout-*.jsonl")):
                 path = Path(name)
@@ -138,7 +142,7 @@ def find_resume_id(harness, cwd, created_ms, conversation):
                         meta = json.loads(handle.readline()).get("payload", {})
                 except (OSError, ValueError):
                     continue
-                if isinstance(meta, dict) and meta.get("cwd") == cwd and meta.get("id"):
+                if isinstance(meta, dict) and meta.get("cwd") in spellings and meta.get("id"):
                     matches.append(meta["id"])
     except OSError:
         return None, "session store unreadable"

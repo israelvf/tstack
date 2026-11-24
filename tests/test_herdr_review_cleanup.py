@@ -76,6 +76,28 @@ class CleanupTests(unittest.TestCase):
             (project / "second.jsonl").write_text(f"Conversation: {mine}")
             self.assertIn("more than one", find_resume_id("claude", cwd, 0, mine)[1])
 
+    def test_resume_id_is_found_when_the_review_root_is_behind_a_symlink(self):
+        conv = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as base, \
+                mock.patch.dict(os.environ, {"HOME": home}):
+            real_root = Path(base) / "real-root"
+            (real_root / "snap").mkdir(parents=True)
+            alias = Path(base) / "alias-root"
+            alias.symlink_to(real_root)
+            given = str(alias / "snap")                # what hc reports: the path as it was passed
+            canonical = str((real_root / "snap").resolve())  # what Claude and Codex key their sessions by
+            claude_project = claude_project_dir(canonical)
+            claude_project.mkdir(parents=True)
+            (claude_project / "claude-id.jsonl").write_text(f"Conversation: {conv}")
+            day = Path(home) / ".codex" / "sessions" / "2026" / "11" / "24"
+            day.mkdir(parents=True)
+            (day / "rollout-x.jsonl").write_text(
+                json.dumps({"payload": {"cwd": canonical, "id": "codex-id"}}) + f"\nConversation: {conv}")
+            self.assertEqual(find_resume_id("claude", given, 0, conv), ("claude-id", None))
+            self.assertEqual(find_resume_id("codex", given, 0, conv), ("codex-id", None))
+            # the canonical path keeps working too
+            self.assertEqual(find_resume_id("claude", canonical, 0, conv), ("claude-id", None))
+
     def test_codex_resume_id_needs_matching_cwd_and_conversation(self):
         conv = str(uuid.uuid4())
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
