@@ -46,7 +46,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_reads_and_our_tool_are_allowed_once(self):
         for title, kind in (("Read File", "read"), ("grep", "search"), ("tstack-review: submit_review", "other"),
-                            ("Run mcp_tstack-review_submit_review", "other"), ("mcp.tstack-review.submit_review {}", "execute")):
+                            ("Run mcp_tstack-review_submit_review", "other"), ("mcp.tstack-review.submit_review", "execute")):
             chosen, _ = acp.decide_permission(title, kind, self.OPTIONS)
             self.assertEqual(chosen["optionId"], "a", title)
 
@@ -54,6 +54,16 @@ class PolicyTests(unittest.TestCase):
         for title, kind in (("Edit x", "edit"), ("bash", "execute"), ("fetch", "fetch"), ("other-server: submit_review", "other"), ("", "other")):
             chosen, _ = acp.decide_permission(title, kind, self.OPTIONS)
             self.assertEqual(chosen["optionId"], "r", title)
+
+    def test_words_inside_a_command_never_identify_our_tool(self):  # ACP-04
+        chosen, ours = acp.decide_permission('bash -c "echo tstack-review submit_review; touch pwned"', "execute", self.OPTIONS)
+        self.assertEqual((chosen["optionId"], ours), ("r", False))
+
+    def test_structured_server_and_tool_identify_it_when_there_is_no_title(self):
+        raw = {"server": "tstack-review", "tool": "submit_review", "arguments": {}}
+        self.assertEqual(acp.decide_permission("", "execute", self.OPTIONS, raw)[0]["optionId"], "a")
+        self.assertEqual(acp.decide_permission("", "execute", self.OPTIONS, {**raw, "server": "other"})[0]["optionId"], "r")
+        self.assertEqual(acp.decide_permission("", "execute", self.OPTIONS, {"command": "tstack-review submit_review"})[0]["optionId"], "r")
 
     def test_no_reject_option_means_cancel(self):
         chosen, _ = acp.decide_permission("Edit x", "edit", [{"optionId": "a", "kind": "allow_once"}])
@@ -78,7 +88,73 @@ class ReviewSchemaTests(unittest.TestCase):
         self.assertTrue(acp.review_problems("text"))
 
 
+class StrictSchemaTests(unittest.TestCase):
+    def test_unknown_fields_are_rejected_at_both_levels(self):  # ACP-03
+        good = ReviewSchemaTests.GOOD
+        self.assertTrue(any("unknown field 'conversation'" in p for p in acp.review_problems({**good, "conversation": "X", "round": 999})))
+        extra = {**good, "findings": [{**good["findings"][0], "round": 5}]}
+        self.assertTrue(any("unknown field 'round'" in p for p in acp.review_problems(extra)))
+
+    def test_server_never_lets_the_model_choose_conversation_or_round(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out = os.path.join(temp, "r.json")
+            process = subprocess.Popen([sys.executable, acp.__file__, "mcp-server", "--out", out, "--conversation", CONVERSATION, "--round", "2"],
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+            def call(number, arguments):
+                process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": number, "method": "tools/call",
+                                                "params": {"name": "submit_review", "arguments": arguments}}) + "\n")
+                process.stdin.flush()
+                return json.loads(process.stdout.readline())
+
+            forged = call(1, {**ReviewSchemaTests.GOOD, "conversation": "MODEL-ID", "round": 999})
+            self.assertTrue(forged["result"]["isError"])
+            self.assertFalse(os.path.exists(out))
+            call(2, ReviewSchemaTests.GOOD)
+            process.stdin.close()
+            process.wait(timeout=5)
+            process.stdout.close()
+            record = json.loads(Path(out).read_text())
+            self.assertEqual((record["conversation"], record["round"]), (CONVERSATION, 2))
+
+
 class FingerprintTests(unittest.TestCase):
+    def test_same_size_content_change_with_restored_mtime_is_detected(self):  # ACP-02
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "a"
+            path.write_text("AAAA")
+            before = acp.fingerprint(temp)
+            stamp = os.stat(path)
+            path.write_text("BBBB")
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            self.assertNotEqual(before, acp.fingerprint(temp))
+
+    def test_symlinks_to_directories_are_part_of_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / "one").mkdir()
+            (Path(temp) / "two").mkdir()
+            link = Path(temp) / "link"
+            link.symlink_to("one")
+            first = acp.fingerprint(temp)
+            link.unlink()
+            link.symlink_to("two")
+            self.assertNotEqual(first, acp.fingerprint(temp))
+
+    def test_unreadable_entry_raises_instead_of_looking_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "secret"
+            path.write_text("x")
+            os.chmod(path, 0)
+            try:
+                if os.access(path, os.R_OK):
+                    self.skipTest("running as a user that can read anything")
+                with self.assertRaises(OSError):
+                    acp.fingerprint(temp)
+            finally:
+                os.chmod(path, 0o644)
+
+
+class FingerprintBasicsTests(unittest.TestCase):
     def test_new_file_or_edit_changes_it(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -102,6 +178,28 @@ class SnapshotRuleTests(unittest.TestCase):
             for path in (writable, link, Path(temp) / "missing"):
                 with self.assertRaises(acp.Unavailable):
                     acp.check_snapshot(path)
+
+    def test_a_writable_file_inside_a_read_only_root_is_refused(self):  # ACP-01
+        with Snapshot() as path:
+            os.chmod(path, 0o755)
+            os.chmod(path / "a.py", 0o644)
+            os.chmod(path, 0o555)
+            with self.assertRaises(acp.Unavailable) as caught:
+                acp.check_snapshot(path)
+            self.assertIn("a.py", str(caught.exception))
+
+    def test_a_symlink_leaving_the_snapshot_is_refused_but_an_inner_one_is_fine(self):
+        with Snapshot() as path:
+            outside = Path(path.parent) / "outside"
+            outside.mkdir()
+            os.chmod(path, 0o755)
+            (path / "inner").symlink_to("a.py")
+            os.chmod(path, 0o555)
+            self.assertEqual(acp.snapshot_problems(path), [])
+            os.chmod(path, 0o755)
+            (path / "escape").symlink_to(outside)
+            os.chmod(path, 0o555)
+            self.assertTrue(any("leaves the snapshot" in p for p in acp.snapshot_problems(path)))
 
     def test_run_review_reports_unavailable_without_starting_anything(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -160,10 +258,35 @@ class RoundTests(unittest.TestCase):
             self.assertEqual(result["status"], "no_review")
             self.assertNotIn("OLD HISTORY", result["final_text"])
 
+    def test_a_steady_stream_of_updates_cannot_hold_the_deadline_open(self):  # ACP-07
+        with Snapshot() as path:
+            result = review(path, "flood", timeout=1)
+            self.assertEqual(result["status"], "timeout")
+
+    def test_a_change_made_while_the_agent_shuts_down_is_tampering(self):  # ACP-05
+        with Snapshot() as path:
+            result = review(path, "submit", FAKE_MUTATE="1")
+            self.assertEqual(result["status"], "tampered")
+            self.assertIsNone(result["review"])
+            self.assertIn("unaccepted_review", result)
+
+    def test_an_agent_error_never_becomes_an_approval_even_with_a_recorded_review(self):  # ACP-08
+        with Snapshot() as path:
+            result = review(path, "submit_error")
+            self.assertEqual(result["status"], "agent_error")
+            self.assertIsNone(result["review"])
+            self.assertEqual(result["unaccepted_review"]["verdict"], "CHANGES_REQUESTED")
+
+    def test_a_turn_that_did_not_end_normally_is_incomplete(self):
+        with Snapshot() as path:
+            result = review(path, "submit_cancelled")
+            self.assertEqual(result["status"], "incomplete")
+            self.assertIsNone(result["review"])
+
     def test_the_agent_process_group_is_gone_afterwards(self):
         with Snapshot() as path:
             review(path, "submit")
-        leftovers = subprocess.run(["pgrep", "-f", "fake_acp_agent.py"], capture_output=True, text=True).stdout.split()
+        leftovers = subprocess.run(["pgrep", "-f", r"^\S*python\S* \S*fake_acp_agent\.py"], capture_output=True, text=True).stdout.split()
         self.assertEqual(leftovers, [])
 
 
@@ -197,6 +320,55 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(child_env["INITIAL_AGENT_MODE"], "read-only")
             self.assertNotIn("OPENAI_API_KEY", child_env)
 
+    def test_profiles_belong_to_one_conversation_and_never_write_through_a_link(self):  # ACP-06
+        with tempfile.TemporaryDirectory() as temp:
+            real = Path(temp) / "real"
+            real.mkdir()
+            (real / "auth.json").write_text("{}")
+            victim = Path(temp) / "victim.toml"
+            victim.write_text("keep me")
+            old = dict(os.environ)
+            os.environ.update({"CODEX_HOME": str(real), "TSTACK_REVIEW_ROOT": str(Path(temp) / "root")})
+            try:
+                one = acp.profiles_dir() / "conv-one" / "codex"
+                one.mkdir(parents=True)
+                (one / "config.toml").symlink_to(victim)
+                (one / "CLAUDE.md").write_text("stale")
+                acp.link_credential(one, "auth.json", real)
+                other = acp.profiles_dir() / "conv-two" / "codex"
+                acp.link_credential(other, "auth.json", real)
+                self.assertEqual(sorted(p.name for p in other.iterdir()), ["auth.json"])
+                (one / "config.toml").unlink()
+                (one / "config.toml").symlink_to(victim)
+                adapters = Path(temp) / "a" / "node_modules" / ".bin"
+                adapters.mkdir(parents=True)
+                (adapters / "codex-acp").write_text("")
+                fake = Path(temp) / "bin"
+                fake.mkdir()
+                (fake / "codex").write_text("")
+                os.chmod(fake / "codex", 0o755)
+                os.environ.update({"TSTACK_ACP_ADAPTERS": str(Path(temp) / "a"), "PATH": f"{fake}:{old['PATH']}"})
+                acp.launch_spec("sol", acp.AGENTS["sol"], "conv-one")
+                self.assertEqual(victim.read_text(), "keep me")
+                self.assertFalse((one / "config.toml").is_symlink())
+                acp.drop_profiles("conv-one")
+                self.assertFalse(one.exists())
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+
+    def test_a_symlinked_profile_folder_is_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            real = Path(temp) / "real"
+            real.mkdir()
+            (real / "auth.json").write_text("{}")
+            target = Path(temp) / "elsewhere"
+            target.mkdir()
+            link = Path(temp) / "profile"
+            link.symlink_to(target)
+            with self.assertRaises(acp.Unavailable):
+                acp.link_credential(link, "auth.json", real)
+
     def test_missing_adapter_or_login_is_unavailable_with_a_hint(self):
         with tempfile.TemporaryDirectory() as temp:
             old = dict(os.environ)
@@ -225,6 +397,36 @@ class CheckTests(unittest.TestCase):
                 report = acp.run_check("fake", spec=fake_spec(FAKE="submit"), timeout=20)
                 self.assertTrue(report["passed"], report)
                 self.assertEqual(list(Path(root).iterdir()), [])
+            finally:
+                if old is None:
+                    del os.environ["TSTACK_REVIEW_ROOT"]
+                else:
+                    os.environ["TSTACK_REVIEW_ROOT"] = old
+
+
+class CheckEvidenceTests(unittest.TestCase):
+    def test_an_agent_that_never_submits_a_review_fails_the_check(self):  # ACP-09
+        with tempfile.TemporaryDirectory() as root:
+            old = os.environ.get("TSTACK_REVIEW_ROOT")
+            os.environ["TSTACK_REVIEW_ROOT"] = root
+            try:
+                report = acp.run_check("fake", spec=fake_spec(FAKE="none"), timeout=20)
+                self.assertFalse(report["passed"])
+                self.assertFalse(report["checks"]["structured_review"])
+            finally:
+                if old is None:
+                    del os.environ["TSTACK_REVIEW_ROOT"]
+                else:
+                    os.environ["TSTACK_REVIEW_ROOT"] = old
+
+    def test_a_forbidden_attempt_that_never_finishes_is_not_counted_as_blocked(self):
+        with tempfile.TemporaryDirectory() as root:
+            old = os.environ.get("TSTACK_REVIEW_ROOT")
+            os.environ["TSTACK_REVIEW_ROOT"] = root
+            try:
+                report = acp.run_check("fake", spec=fake_spec(FAKE="hang"), timeout=1)
+                self.assertFalse(report["passed"])
+                self.assertFalse(report["checks"].get("write_attempt_blocked", False))
             finally:
                 if old is None:
                     del os.environ["TSTACK_REVIEW_ROOT"]
