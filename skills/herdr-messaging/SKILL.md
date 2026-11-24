@@ -66,9 +66,9 @@ was written; check the installed help before using them:
 ```sh
 # Example names/path; replace the suffix, snapshot path and short head label.
 # Keep every snapshot under one stable root (see "Reply channel, permissions and trust").
-hc run --bg --name tstack-review-sol-a1b2c3d4 --cwd ~/.cache/tstack-review/a1b2c3d4 --label tstack.review=sol --label tstack.head=0123456789ab codex --no-daemon --model gpt-6.1-sol --sandbox read-only --ask-for-approval never
-hc run --bg --name tstack-review-opus-a1b2c3d4 --cwd ~/.cache/tstack-review/a1b2c3d4 --label tstack.review=opus --label tstack.head=0123456789ab claude --model claude-opus-5-5 --permission-mode plan --disallowedTools Bash Edit Write NotebookEdit Task Agent
-hc run --bg --name tstack-review-argon-a1b2c3d4 --cwd ~/.cache/tstack-review/a1b2c3d4 --label tstack.review=argon --label tstack.head=0123456789ab agy --model gemini-4-argon-high --mode plan --sandbox --effort high
+hc run --bg --name tstack-review-sol-a1b2c3d4 --cwd ~/.cache/tstack-review/a1b2c3d4 --label tstack.review=sol --label tstack.head=0123456789ab --label tstack.conversation=<conversation-uuid> codex --no-daemon --model gpt-6.1-sol --sandbox read-only --ask-for-approval never
+hc run --bg --name tstack-review-opus-a1b2c3d4 --cwd ~/.cache/tstack-review/a1b2c3d4 --label tstack.review=opus --label tstack.head=0123456789ab --label tstack.conversation=<conversation-uuid> claude --model claude-opus-5-5 --permission-mode plan --disallowedTools Bash Edit Write NotebookEdit Task Agent
+hc run --bg --name tstack-review-argon-a1b2c3d4 --cwd ~/.cache/tstack-review/a1b2c3d4 --label tstack.review=argon --label tstack.head=0123456789ab --label tstack.conversation=<conversation-uuid> agy --model gemini-4-argon-high --mode plan --sandbox --effort high
 ```
 
 After startup, validate the returned address with `hc get` and `hc read`
@@ -117,6 +117,39 @@ A read-only reviewer must never need a permission dialog to do its job.
   or answer it for the reviewer, and do not record a prompt as a review. If the
   reviewer's final message is already complete on screen, it may be logged as
   received; a command it only proposed to run is not a review.
+
+### Cleanup
+
+A finished review leaves dedicated reviewer sessions running and snapshot folders
+on disk. `herdr-review-cleanup` (or `python3 scripts/herdr_review_cleanup.py`)
+handles both for one conversation. Start with the read-only report:
+
+```sh
+herdr-review-cleanup plan --conversation <uuid>
+```
+
+- **Sessions: end them after a final `APPROVED`, without asking.**
+  `herdr-review-cleanup sessions --conversation <uuid> --approved` first logs a
+  `session_end` record for each one (the harness, the snapshot folder and a resume
+  command that keeps the original read-only flags), then ends it. It only touches
+  sessions named `tstack-review-*` and labelled with this conversation, never
+  removes a terminal (no `hc rm`) and never touches a session you reused. While the
+  snapshot still exists, the panel replaces "Open session" with "Resume session",
+  which reopens the reviewer read-only with its full history. After any other
+  outcome, keep the sessions and ask.
+- **Snapshots: never delete automatically; ask.** Tell the user plainly that
+  deleting a snapshot makes it impossible to resume that reviewer later: the
+  panel hides "Resume session", and resuming from another folder triggers trust
+  and session-folder dialogs and detaches the reviewer from the files it
+  reviewed. Only after a clear yes, run
+  `herdr-review-cleanup snapshots --conversation <uuid> --yes`. It removes only
+  real folders directly under the review root (`~/.cache/tstack-review/` by
+  default, or `TSTACK_REVIEW_ROOT`) and skips symlinks and anything elsewhere.
+- Sessions you launched end with the session that launched them unless started
+  with `--outlive-parent`, so finish the review before closing the coordinator.
+- A resumed Claude Code reviewer in plan mode may ask to exit plan mode if it is
+  told to write something. Treat that as a blocking dialog: report it, do not
+  answer it.
 
 ## Message identity and context
 

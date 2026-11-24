@@ -24,6 +24,8 @@ MESSAGE_FIELDS = {
 OPTIONAL_MESSAGE_FIELDS = {"title", "summary", "space_id", "tab_id", "space_name", "tab_name", "group_message_id"}
 SUMMARY_MAX = 500
 READ_FIELDS = {"event_id", "kind", "related_event_id", "conversation_id", "reader", "created_at"}
+# A dedicated reviewer session that was ended, with what the panel needs to resume it.
+SESSION_END_FIELDS = {"event_id", "kind", "conversation_id", "session", "harness", "cwd", "resume_argv", "created_at"}
 DELIVERY_FIELDS = {
     "event_id", "kind", "related_event_id", "conversation_id", "round",
     "sender", "recipient", "sender_model", "recipient_model",
@@ -43,9 +45,10 @@ def validate(record):
     if not isinstance(record, dict):
         raise ValueError("record must be a JSON object")
     kind = record.get("kind")
-    expected = {"message": MESSAGE_FIELDS, "delivery": DELIVERY_FIELDS, "read": READ_FIELDS}.get(kind)
+    expected = {"message": MESSAGE_FIELDS, "delivery": DELIVERY_FIELDS, "read": READ_FIELDS,
+                "session_end": SESSION_END_FIELDS}.get(kind)
     if expected is None:
-        raise ValueError("kind must be message, delivery or read")
+        raise ValueError("kind must be message, delivery, read or session_end")
     allowed = expected | OPTIONAL_MESSAGE_FIELDS if kind == "message" else expected
     extra = set(record) - allowed
     missing = expected - set(record)
@@ -56,6 +59,20 @@ def validate(record):
         uuid.UUID(record["conversation_id"])
     except (ValueError, TypeError, AttributeError) as exc:
         raise ValueError("event_id and conversation_id must be UUIDs") from exc
+    if kind == "session_end":
+        try:
+            dt.datetime.fromisoformat(record["created_at"].replace("Z", "+00:00"))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("created_at must be ISO-8601") from exc
+        for field in ("session", "harness", "cwd"):
+            if not isinstance(record[field], str) or not record[field].strip():
+                raise ValueError(f"{field} must be a non-empty string")
+        argv = record["resume_argv"]
+        if not isinstance(argv, list) or not argv or any(not isinstance(item, str) or not item for item in argv):
+            raise ValueError("resume_argv must be a non-empty list of strings")
+        if record["harness"] not in {"claude", "codex"} or argv[0] != record["harness"]:
+            raise ValueError("resume_argv must start with the claude or codex harness")
+        return
     if kind == "read":
         try:
             uuid.UUID(record["related_event_id"])

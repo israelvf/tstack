@@ -19,7 +19,7 @@ const DEFAULT_COLORS = {
 };
 
 function parseLog(raw) {
-  const messages = [], deliveries = new Map(), reads = new Map();
+  const messages = [], deliveries = new Map(), reads = new Map(), ends = new Map();
   for (const line of String(raw ?? "").split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -30,6 +30,10 @@ function parseLog(raw) {
         if (!reads.has(item.related_event_id)) reads.set(item.related_event_id, new Set());
         reads.get(item.related_event_id).add(item.reader);
       }
+      // A dedicated reviewer session that was ended: how to resume it, read-only, from its snapshot.
+      if (item.kind === "session_end" && typeof item.conversation_id === "string" && typeof item.session === "string"
+        && typeof item.cwd === "string" && Array.isArray(item.resume_argv)
+        && ["claude", "codex"].includes(item.resume_argv[0])) ends.set(`${item.conversation_id}:${item.session}`, item);
       if (item.kind === "message" && ["incoming", "outgoing"].includes(item.direction)
         && typeof item.text === "string" && item.text.trim()
         && typeof item.conversation_id === "string" && Number.isInteger(item.round)
@@ -40,7 +44,7 @@ function parseLog(raw) {
         && Array.isArray(item.criteria) && Array.isArray(item.evidence)) messages.push(item);
     } catch { /* Ignore a truncated trailing line or a malformed record. */ }
   }
-  return { messages: messages.slice(-LIMIT_MESSAGES), deliveries, reads };
+  return { messages: messages.slice(-LIMIT_MESSAGES), deliveries, reads, ends };
 }
 
 const stamp = (value) => {
@@ -297,6 +301,8 @@ export default class TStackReviews extends View {
     this.messages = [];
     this.deliveries = new Map();
     this.reads = new Map();
+    this.ends = new Map(); // conversation:session -> session_end record
+    this.resumable = new Set(); // keys of ended sessions whose snapshot folder still exists
     this.colors = { ...DEFAULT_COLORS };
     this.context = new Map(); // conversation_id -> { space, tab, spaceName, tabName }
     this.selected = null;
@@ -347,6 +353,13 @@ export default class TStackReviews extends View {
       this.messages = parsed.messages;
       this.deliveries = parsed.deliveries;
       this.reads = parsed.reads;
+      this.ends = parsed.ends;
+      const resumable = new Set();
+      for (const [key, end] of parsed.ends) {
+        const there = await exec("test", ["-d", end.cwd], { timeout: 3000 }).catch(() => ({ code: 1 }));
+        if (there.code === 0) resumable.add(key);
+      }
+      this.resumable = resumable;
       await this.loadColors();
       try { this.trackContext(); } catch { /* Context is best effort. */ }
       this.status = parsed.messages.length ? "" : EMPTY_LOG;
@@ -356,6 +369,12 @@ export default class TStackReviews extends View {
       this.loading = false;
       cx.notify();
     }
+  }
+
+  // Reopen an ended reviewer in its original snapshot, with the read-only flags it was launched with.
+  resume(end) {
+    if (!["claude", "codex"].includes(end.resume_argv[0])) return;
+    run("tab.new", { name: "Reviewer (resumed)", folder: end.cwd, argv: end.resume_argv });
   }
 
   openLink(url) {
@@ -418,6 +437,8 @@ export default class TStackReviews extends View {
     const summary = summarize(message);
     const tickColor = tick.state === "read" ? "#34b7f1" : tick.state === "blocked" ? "#ef4444" : t.dim;
     const openSource = () => run("terminal.peek", { terminal: message.source_session });
+    const endKey = `${task.id}:${message.source_session}`;
+    const resumeEnd = !available && this.resumable.has(endKey) ? this.ends.get(endKey) : null;
     const card = v_flex().max_w(760).min_w(0).gap(6).px(12).py(9).rounded(12)
       .bg(mix(accent, t.background, 0.22)).border(1).border_color(mix(accent, t.background, 0.55))
       .child(div().w_full().truncate().font_semibold().text_size(12).text_color(accent).child(displayName(message.sender)))
@@ -431,6 +452,7 @@ export default class TStackReviews extends View {
         }).child(open ? "Hide details" : "Details"))
       .child(h_flex().w_full().gap(8).items_center().justify_end()
         .when(available, (el) => el.child(div().text_size(10.5).text_color(t.dim).cursor_pointer().on_click(openSource).child("Open session")))
+        .when(!available && resumeEnd, (el) => el.child(div().text_size(10.5).text_color(t.accent).cursor_pointer().on_click(() => this.resume(resumeEnd)).child("Resume session")))
         .child(div().text_size(10.5).text_color(t.dim).child(clock(message.created_at)))
         .when(Boolean(tick.mark), (el) => el.child(div().text_size(11).font_semibold().text_color(tickColor).child(tick.mark))));
     return h_flex().w_full().when(right, (el) => el.justify_end()).child(card);

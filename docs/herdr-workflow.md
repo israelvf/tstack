@@ -201,6 +201,38 @@ dialog it is (permission, folder trust or plan approval) and what each answer
 would grant. Nothing answers it on the reviewer's behalf, and a prompt is never
 recorded as a review.
 
+### Cleanup
+
+A finished review leaves dedicated reviewer sessions and snapshot folders behind.
+`herdr-review-cleanup` cleans one conversation:
+
+```sh
+herdr-review-cleanup plan --conversation <uuid>                  # report only
+herdr-review-cleanup sessions --conversation <uuid> --approved   # end dedicated sessions
+herdr-review-cleanup snapshots --conversation <uuid> --yes       # delete snapshot folders
+```
+
+- **Sessions** are ended automatically after a final `APPROVED`. Before ending
+  each one the script logs a `session_end` record with a resume command that
+  keeps the original read-only flags (`claude ... --resume <id>` or
+  `codex resume <id> ...`). It only touches sessions named `tstack-review-*` and
+  labelled `tstack.conversation=<uuid>`, never removes a terminal and never
+  touches a reused session. After any other outcome they are kept and the agent
+  asks.
+- **Snapshots** are never deleted automatically. The agent asks and says that
+  deleting a snapshot prevents resuming the reviewers later. Only real folders
+  directly under the review root (`~/.cache/tstack-review/`, or
+  `TSTACK_REVIEW_ROOT`) are removed; symlinks and other paths are skipped.
+- **In the panel**, an ended session shows **Resume session** in place of
+  **Open session** while its snapshot folder still exists. It reopens the
+  reviewer in that folder, read-only, with its full history. Once the snapshot is
+  gone the button disappears: resuming elsewhere triggers trust and
+  session-folder dialogs and detaches the reviewer from the files it reviewed. A
+  resumed Claude Code reviewer in plan mode may ask to leave plan mode if told to
+  write; that is a blocking dialog and is never answered for it.
+- Dedicated sessions end with the session that launched them unless started with
+  `--outlive-parent`.
+
 ## Review contract
 
 A review request is a clean message carrying: `conversation_id`, `round`,

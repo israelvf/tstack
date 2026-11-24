@@ -82,6 +82,16 @@ class ReviewLogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "summary"):
             validate(record)
 
+    def test_session_end_record(self):
+        record = {"event_id": str(uuid.uuid4()), "kind": "session_end", "conversation_id": str(uuid.uuid4()),
+                  "session": "t3s", "harness": "codex", "cwd": "/tmp/snap",
+                  "resume_argv": ["codex", "resume", "abc", "--sandbox", "read-only"],
+                  "created_at": "2026-11-24T12:00:00Z"}
+        validate(record)
+        record["resume_argv"] = ["sh", "-c", "evil"]
+        with self.assertRaisesRegex(ValueError, "must start with"):
+            validate(record)
+
     def test_read_receipt(self):
         read = {"event_id": str(uuid.uuid4()), "kind": "read", "related_event_id": str(uuid.uuid4()),
                 "conversation_id": str(uuid.uuid4()), "reader": "t2x", "created_at": "2026-11-13T12:00:02Z"}

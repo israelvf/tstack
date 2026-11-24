@@ -113,6 +113,10 @@ blockers resolved, checks rerun after fixes and no unresolved correctness
 concern from the implementer. Otherwise report `BLOCKED` or `INCONCLUSIVE`.
 Budget exhaustion is never approval. Report actual terminal/model, rounds,
 reviewed SHA, dispositions, checks, receipts and any unavailable/late/stale
-review. Do not push or open a PR as part of this skill alone. An explicitly
+review. After `APPROVED`, end the dedicated reviewer sessions with
+`herdr-review-cleanup sessions --approved`, then ask the user whether to delete
+the snapshots, saying that doing so prevents resuming those sessions later; see
+"Cleanup" in `herdr-messaging`. Keep everything after any other outcome and ask.
+Do not push or open a PR as part of this skill alone. An explicitly
 invoked parent workflow may authorize those separate steps; this review does
 not.

@@ -116,6 +116,11 @@ Re-run applicable checks after corrections before reporting.
 
 ## Outcome
 
+After `APPROVED`, end the dedicated reviewer sessions with
+`herdr-review-cleanup sessions --approved`, then ask the user whether to delete
+the snapshots, saying that doing so prevents resuming those sessions later; see
+"Cleanup" in `herdr-messaging`. Keep everything after any other outcome and ask.
+
 Report each configured member separately: exact session/model, reviewed SHA,
 rounds, verdict, findings and receipt/status. Distinguish unavailable,
 timed-out, blocked, stale-SHA and reviewed. `APPROVED` means all available
