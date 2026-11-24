@@ -45,7 +45,7 @@ must name the immutable full `base_sha` and `head_sha`.
 ## 3. Independent review
 
 Run `sol-loop` using its existing Codex GPT-6.1 Sol Herdr session. It is one
-reviewer at a time and follows its configured round budget. The reviewer gets
+reviewer at a time and continues until Sol approves the exact head. The reviewer gets
 the immutable snapshot, acceptance criteria and concise evidence; it does not
 edit. OpenCode verifies each finding and records a disposition and evidence.
 If the configured session/model is unavailable, ambiguous or stale, report it

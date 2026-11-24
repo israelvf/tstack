@@ -111,10 +111,16 @@ The OpenCode implementer verifies findings and records
 every disposition. One proven blocker can block regardless of favorable
 opinions from other members.
 
-Default budget: at most two rounds. Round 2 is only for the new diff and open
-findings, with the same base and a new full `head_sha`. Ask before any extra
-round. Do not restart the full review for nits or unrelated suggestions.
+There is no fixed number of rounds: keep going until every available member
+`APPROVE`s the exact current `head_sha`, or the user stops. Round 1 is the full
+review; every later round is only the new diff and the open findings, with the same
+base and a new full `head_sha`. Report the verdicts, findings and dispositions after
+each round. Do not restart the full review for nits or unrelated suggestions.
 Re-run applicable checks after corrections before reporting.
+
+If a member keeps re-raising a finding you declined with evidence, or the findings
+stop shrinking, do not argue in circles: record the disagreement with both sides'
+evidence and ask the user to decide.
 
 ## Outcome
 
@@ -128,6 +134,6 @@ rounds, verdict, findings and receipt/status. Distinguish unavailable,
 timed-out, blocked, stale-SHA and reviewed. `APPROVED` means all available
 reviews cover the current head, no confirmed blocker remains open, checks pass,
 and the implementer has no unresolved correctness concern. Missing members,
-open proven defects or exhausted budget without resolution mean `BLOCKED` or
+open proven defects, or a stop before every available member approves, mean `BLOCKED` or
 `INCONCLUSIVE`, not approval. Council is advisory; it does not authorize a PR
 or merge.

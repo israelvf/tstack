@@ -337,12 +337,12 @@ OpenCode session checks each finding and records `FIXED`, `DECLINED`, `OPEN` or
 `NOT_VERIFIED`, with its own evidence. A proven defect can block despite other
 favorable opinions.
 
-`sol-loop`: one reviewer at a time, a Codex GPT-6.1 Sol session, default budget
-of three rounds. `council`: Sol and Claude Opus 5.5, no substitutions, up to two
-rounds by default. The second round covers only the new diff and the open
-findings. Timeout, block, unavailability and a stale SHA have an explicit status
-and never count as approval. See the skills for the budget and the final
-decision.
+`sol-loop`: one reviewer at a time, a Codex GPT-6.1 Sol session. `council`: Sol and
+Claude Opus 5.5, no substitutions. Neither has a fixed number of rounds: they continue
+until the required reviewers approve the exact current head, or the user stops. Later
+rounds cover only the new diff and the open findings. Timeout, block, unavailability
+and a stale SHA have an explicit status and never count as approval. See the skills
+for the final decision.
 
 ### Local log and receipts
 

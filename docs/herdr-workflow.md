@@ -138,8 +138,8 @@ any Git repository; it is yours, not part of this project.
 
 | Skill | Reviewers | Rounds |
 | --- | --- | --- |
-| `sol-loop` | Codex, one at a time | 3 by default |
-| `council` | Codex (GPT-6.1 Sol) and Claude Code (Claude Opus 5.5), independent | 2 by default |
+| `sol-loop` | Codex, one at a time | until approved |
+| `council` | Codex (GPT-6.1 Sol) and Claude Code (Claude Opus 5.5), independent | until approved |
 | `full-stop` | Uses `sol-loop`, then files and watches a PR | n/a |
 
 Invoke each one explicitly. A closing phrase such as "full stop" does not
@@ -149,7 +149,12 @@ trigger `full-stop`.
   head, criteria and evidence, and none sees the others' reviews. Each final
   review appears in Reviews as soon as it arrives. When the round closes, the
   coordinator forwards the reviews to the other members as group context.
-- **Later rounds** cover only the new diff and the findings still open.
+- **Rounds.** There is no fixed limit: a review continues until the required
+  reviewers approve the exact current head, or you stop it. Later rounds cover only
+  the new diff and the findings still open, and the agent reports after each round.
+  If a reviewer keeps re-raising a finding that was declined with evidence, or the
+  findings stop shrinking, the agent records both sides and asks you to decide
+  instead of looping.
 - **No substitutions.** If a member is missing, blocked, timed out or reviewed
   a stale commit, that is reported with an explicit status. It never counts as
   approval, and a partial council is labelled partial. A proven defect blocks
@@ -231,7 +236,8 @@ herdr-review-cleanup snapshots --conversation <uuid> --yes       # delete snapsh
   panel cannot see your shell environment, so if you change the root, also pass the
   same path as the panel's `reviewRoot` prop. Otherwise the panel rejects every
   resume record and "Resume session" never appears. Both sides require the session
-  folder to be a plain name directly under the root, with symlinks resolved.
+  folder to be a plain name directly under the root, with symlinks resolved. The
+  panel checks that it is a directory when it refreshes and again when you click.
 - **In the panel**, an ended session shows **Resume session** in place of
   **Open session** while its snapshot folder still exists. It reopens the
   reviewer in that folder, read-only, with its full history. Once the snapshot is

@@ -14,13 +14,20 @@ substitute a model or change an existing session's permissions.
 Keep the change minimal. A review is evidence-driven, not a request to appease a
 model. Do not let findings expand the user's scope.
 
-## Budget
+## Rounds
 
 - One reviewer at a time; the reviewer must not spawn reviewers or edit files.
-- Three rounds maximum by default. Round 1 is a complete review; later rounds
-  cover only the new diff and unresolved findings. Ask before exceeding the cap.
-- Stop early when only declined/accepted nits remain. No follow-up round for
-  comment-, documentation-, or format-only edits.
+- There is no fixed number of rounds: keep going until Sol `APPROVE`s the exact
+  current head, or the user stops. Round 1 is a complete review; later rounds cover
+  only the new diff and unresolved findings. Report the verdict, findings and
+  dispositions after each round.
+- If Sol approves with only declined/accepted nits left, that is approval; do not
+  start another round for them. A fix to a comment, documentation or formatting
+  after `CHANGES_REQUESTED` still needs Sol's `APPROVE` on the new head, but the
+  round can be brief.
+- If Sol keeps re-raising a finding you declined with evidence, or findings stop
+  shrinking, do not argue in circles: record the disagreement with both sides'
+  evidence and ask the user to decide.
 - Keep a finding ledger with stable id, severity, disposition, evidence and
   verification. Never invent model usage or scores.
 
@@ -113,7 +120,7 @@ earlier SHA was reviewed as the new head.
 `APPROVED` requires a Sol `APPROVE` on the exact current `head_sha`, all
 blockers resolved, checks rerun after fixes and no unresolved correctness
 concern from the implementer. Otherwise report `BLOCKED` or `INCONCLUSIVE`.
-Budget exhaustion is never approval. Report actual terminal/model, rounds,
+Stopping before Sol approves is never approval. Report actual terminal/model, rounds,
 reviewed SHA, dispositions, checks, receipts and any unavailable/late/stale
 review. After `APPROVED`, end the dedicated reviewer sessions with
 `herdr-review-cleanup sessions --conversation <uuid> --approved`, then ask the user whether to delete

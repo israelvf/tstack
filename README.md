@@ -10,8 +10,8 @@ existing `hc` sessions and do not require T3 Code.
 |---|---|---|
 | `full-send` | "full send" | Takes a change to a merged PR with nobody watching: proves it, reviews it, files it, babysits it, merges it. |
 | `full-stop` | Explicit `/full-stop` invocation | Proves, reviews, files and monitors a PR, then leaves merge to you. Does not call `full-send`. |
-| `council` | Explicit "council" request | On-demand independent Herdr review by Sol and Opus 5.5; two rounds by default. |
-| `sol-loop` | Explicit "sol-loop" request | One Codex GPT-6.1 Sol reviewer at a time; three rounds by default. |
+| `council` | Explicit "council" request | On-demand independent Herdr review by Sol and Opus 5.5; as many rounds as needed for approval. |
+| `sol-loop` | Explicit "sol-loop" request | One Codex GPT-6.1 Sol reviewer at a time; as many rounds as needed for approval. |
 | `file-pr` | "file a PR" | Files a short PR that leads with the problem, not an inventory of changes. |
 | `takeover` | "take over" | Finishes someone else's PR, branch, or agent thread, and keeps their credit. |
 | `babysit-pr` | "babysit" | Watches a PR through CI and review bots, and fixes the real findings. |
