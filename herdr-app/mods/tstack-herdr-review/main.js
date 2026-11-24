@@ -404,17 +404,7 @@ export default class TStackReviews extends View {
       this.reads = parsed.reads;
       this.ends = parsed.ends;
       const resumable = new Set();
-      const real = async (path) => {
-        const out = await exec("realpath", ["-e", "--", path], { timeout: 3000 }).catch(() => ({ code: 1 }));
-        return out.code === 0 ? out.stdout.trim() : null;
-      };
-      const realRoot = parsed.ends.size ? await real(this.reviewRoot) : null;
-      for (const [key, end] of parsed.ends) {
-        if (!realRoot || !safeResume(end, this.reviewRoot)) continue;
-        // The folder must exist and, with symlinks resolved, still be a direct child of the real root.
-        const folder = await real(end.cwd);
-        if (folder && folder.slice(0, folder.lastIndexOf("/")) === realRoot) resumable.add(key);
-      }
+      for (const [key, end] of parsed.ends) if (await this.checkedFolder(end)) resumable.add(key);
       this.resumable = resumable;
       await this.loadColors();
       try { this.trackContext(); } catch { /* Context is best effort. */ }
@@ -427,10 +417,25 @@ export default class TStackReviews extends View {
     }
   }
 
+  // The canonical snapshot folder for a resume record, or null. Run at refresh and again at the click,
+  // because a folder can be swapped for a symlink or a file in between.
+  async checkedFolder(end) {
+    if (!safeResume(end, this.reviewRoot)) return null;
+    const real = async (path) => {
+      const out = await exec("realpath", ["-e", "--", path], { timeout: 3000 }).catch(() => ({ code: 1 }));
+      return out.code === 0 ? out.stdout.trim() : null;
+    };
+    const [root, folder] = [await real(this.reviewRoot), await real(end.cwd)];
+    if (!root || !folder || folder.slice(0, folder.lastIndexOf("/")) !== root) return null;
+    const isDir = await exec("test", ["-d", folder], { timeout: 3000 }).catch(() => ({ code: 1 }));
+    return isDir.code === 0 ? folder : null;
+  }
+
   // Reopen an ended reviewer in its original snapshot, with the read-only flags it was launched with.
-  resume(end) {
-    if (!safeResume(end, this.reviewRoot)) return;
-    run("tab.new", { name: "Reviewer (resumed)", folder: end.cwd, argv: end.resume_argv });
+  async resume(end) {
+    const folder = await this.checkedFolder(end);
+    if (!folder) return;
+    run("tab.new", { name: "Reviewer (resumed)", folder, argv: end.resume_argv });
   }
 
   openLink(url) {

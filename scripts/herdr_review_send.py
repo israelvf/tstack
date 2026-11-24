@@ -95,6 +95,47 @@ def snapshot_fields(args):
             "evidence": args.evidence or []}
 
 
+def send_one(args, text, recipient, group, extra, sender_session):
+    """Send to one recipient; returns its result. Raises only before anything was delivered."""
+    info = hc_json("get", recipient["target"])
+    address, state = info["address"], (info.get("status") or {}).get("state")
+    if info.get("state") != "live" or state in BUSY:
+        return {"target": recipient["target"], "sent": False,
+                "reason": "not live" if info.get("state") != "live" else f"session is {state}"}
+    record = {**snapshot_fields(args), "event_id": str(uuid.uuid4()), "kind": "message", "direction": "outgoing",
+              "sender": f"{args.sender_name} / {sender_session}", "recipient": f"{recipient['label']} / {address}",
+              "sender_model": args.sender_model, "recipient_model": recipient["model"],
+              "source_session": sender_session, "destination_session": address, "text": text,
+              "created_at": now(), "status": "pending", "group_message_id": group, **extra}
+    if args.summary:
+        record["summary"] = args.summary
+    try:
+        append(record, args.file)  # logged before sending, as the review contract requires
+    except (ValueError, OSError) as exc:
+        return {"target": recipient["target"], "address": address, "sent": False,
+                "reason": f"not sent, message could not be logged: {exc}"}
+    command = ["hc", "send", *(["--if", "idle"] if state == "idle" else []), "--json", address, text]
+    sent = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        receipt = json.loads(sent.stdout) if sent.returncode == 0 else None
+    except json.JSONDecodeError:
+        receipt = None
+    delivery = {**snapshot_fields(args), "event_id": str(uuid.uuid4()), "kind": "delivery",
+                "related_event_id": record["event_id"], "sender": record["sender"], "recipient": record["recipient"],
+                "sender_model": args.sender_model, "recipient_model": recipient["model"],
+                "source_session": sender_session, "destination_session": address, "created_at": now(),
+                "status": "sent" if receipt else "error", "receipt": clean_receipt(receipt) if receipt else None}
+    result = {"target": recipient["target"], "address": address, "sent": bool(receipt),
+              "event_id": record["event_id"], "receipt": delivery["receipt"]}
+    if not receipt:
+        result["reason"] = (sent.stderr or sent.stdout).strip()[:200]
+    try:  # the message is already out: a logging problem must not change the outcome
+        append(delivery, args.file)
+    except (ValueError, OSError) as exc:
+        result["delivery_not_logged"] = str(exc)
+    return result
+
+
 def send_messages(args, text):
     sender_session = os.environ.get("HC_TERMINAL_ID")
     if not sender_session:
@@ -103,52 +144,19 @@ def send_messages(args, text):
     extra = {}
     if args.title:
         extra["title"] = args.title
-        context = subprocess.run([*log_command(), "context"], capture_output=True, text=True, check=False)
-        if context.returncode == 0:
-            extra.update(json.loads(context.stdout))
+        try:  # space and tab are optional extras; a failure here must not block the send
+            context = subprocess.run([*log_command(), "context"], capture_output=True, text=True, check=False)
+            if context.returncode == 0:
+                extra.update(json.loads(context.stdout))
+        except (OSError, json.JSONDecodeError):
+            pass
+    recipients = [parse_recipient(spec) for spec in args.to]  # reject a malformed --to before anything is sent
     results = []
-    for spec in args.to:
-        recipient = parse_recipient(spec)
-        info = hc_json("get", recipient["target"])
-        address, state = info["address"], (info.get("status") or {}).get("state")
-        if info.get("state") != "live" or state in BUSY:
-            results.append({"target": recipient["target"], "sent": False,
-                            "reason": "not live" if info.get("state") != "live" else f"session is {state}"})
-            continue
-        record = {**snapshot_fields(args), "event_id": str(uuid.uuid4()), "kind": "message", "direction": "outgoing",
-                  "sender": f"{args.sender_name} / {sender_session}", "recipient": f"{recipient['label']} / {address}",
-                  "sender_model": args.sender_model, "recipient_model": recipient["model"],
-                  "source_session": sender_session, "destination_session": address, "text": text,
-                  "created_at": now(), "status": "pending", "group_message_id": group, **extra}
-        if args.summary:
-            record["summary"] = args.summary
+    for recipient in recipients:
         try:
-            append(record, args.file)  # logged before sending, as the review contract requires
-        except ValueError as exc:
-            results.append({"target": recipient["target"], "address": address, "sent": False,
-                            "reason": f"not sent, message could not be logged: {exc}"})
-            continue
-        command = ["hc", "send", *(["--if", "idle"] if state == "idle" else []), "--json", address, text]
-        sent = subprocess.run(command, capture_output=True, text=True, check=False)
-        try:
-            receipt = json.loads(sent.stdout) if sent.returncode == 0 else None
-        except json.JSONDecodeError:
-            receipt = None
-        delivery = {**snapshot_fields(args), "event_id": str(uuid.uuid4()), "kind": "delivery",
-                    "related_event_id": record["event_id"], "sender": record["sender"], "recipient": record["recipient"],
-                    "sender_model": args.sender_model, "recipient_model": recipient["model"],
-                    "source_session": sender_session, "destination_session": address, "created_at": now(),
-                    "status": "sent" if receipt else "error",
-                    "receipt": clean_receipt(receipt) if receipt else None}
-        result = {"target": recipient["target"], "address": address, "sent": bool(receipt),
-                  "event_id": record["event_id"], "receipt": delivery["receipt"]}
-        if not receipt:
-            result["reason"] = (sent.stderr or sent.stdout).strip()[:200]
-        try:  # the message is already out: never let a logging problem stop the other recipients
-            append(delivery, args.file)
-        except ValueError as exc:
-            result["delivery_not_logged"] = str(exc)
-        results.append(result)
+            results.append(send_one(args, text, recipient, group, extra, sender_session))
+        except Exception as exc:  # one broken recipient must not stop the others or hide those already sent
+            results.append({"target": recipient["target"], "sent": False, "reason": f"{type(exc).__name__}: {exc}"})
     return {"conversation_id": args.conversation, "round": args.round, "group_message_id": group, "results": results}
 
 

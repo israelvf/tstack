@@ -114,6 +114,41 @@ class SendTests(unittest.TestCase):
         self.assertIn("boom", result["results"][0]["delivery_not_logged"])
         self.assertTrue(result["results"][1]["sent"])
 
+    def test_a_malformed_recipient_is_rejected_before_anything_is_sent(self):
+        records, sends = [], []
+        with mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t9"}), mock.patch.object(send, "append", lambda r, l: records.append(r)), \
+                mock.patch.object(send.subprocess, "run", lambda cmd, **k: sends.append(cmd)):
+            with self.assertRaisesRegex(ValueError, "missing"):
+                send.send_messages(args(to=["label=Sol,model=m,target=sol", "label=oops"]), "x")
+        self.assertEqual((records, sends), ([], []))
+
+    def test_an_unknown_target_or_spawn_error_never_stops_the_others_and_the_result_survives(self):
+        a = args(to=["label=A,model=m,target=sol", "label=B,model=m,target=typo", "label=C,model=m,target=opus"])
+        sends = []
+
+        def fake_hc(*cmd):
+            if cmd[1] == "typo":
+                raise ValueError("hc get typo failed: no such terminal")
+            return {"address": f"t-{cmd[1]}", "state": "live", "status": {"state": "done"}}
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["hc", "send"]:
+                sends.append(cmd[-2])
+            return mock.Mock(returncode=0, stdout='{"started":true,"status":"idle","turn":1}', stderr="")
+
+        def flaky_append(record, log):
+            if record["kind"] == "delivery" and record["destination_session"] == "t-sol":
+                raise PermissionError("cannot execute the logger")
+
+        with mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t9"}), mock.patch.object(send, "hc_json", fake_hc), \
+                mock.patch.object(send, "append", flaky_append), mock.patch.object(send.subprocess, "run", fake_run):
+            result = send.send_messages(a, "x")
+        self.assertEqual(sends, ["t-sol", "t-opus"])
+        self.assertEqual([r["sent"] for r in result["results"]], [True, False, True])
+        self.assertIn("typo", result["results"][1]["reason"])
+        self.assertIn("cannot execute", result["results"][0]["delivery_not_logged"])
+        self.assertTrue(result["group_message_id"])
+
     def test_recipient_spec_must_be_complete(self):
         with self.assertRaisesRegex(ValueError, "missing"):
             send.parse_recipient("label=x,target=y")
