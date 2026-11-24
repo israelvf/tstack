@@ -178,7 +178,7 @@ class ReviewLogTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate(self.acp_end(root, conversation, codex))
 
-    def test_the_panel_and_the_validator_give_the_same_answer_on_every_resume_form(self):
+    def test_the_panel_and_the_validator_give_the_same_answer_on_every_resume_record(self):
         import shutil
         import subprocess
         node = shutil.which("node")
@@ -191,53 +191,56 @@ class ReviewLogTests(unittest.TestCase):
             root = Path(temp) / "root"
             (root / "snap").mkdir(parents=True)
             lower = str(uuid.uuid4())
-            conversations = {"lower": lower, "upper": lower.upper(), "no_hyphens": lower.replace("-", ""),
-                             "braces": "{" + lower + "}", "urn": "urn:uuid:" + lower}
-            for value in conversations.values():  # real folders, so only the form of the id decides
-                for harness in ("codex", "claude"):
-                    (root / "acp-profiles" / value / harness).mkdir(parents=True, exist_ok=True) if "/" not in value and ":" not in value else None
-            cases = []
-            for name, conversation in conversations.items():
-                home = f"{root}/acp-profiles/{conversation}"
-                cases += [
-                    (name, ["env", f"CODEX_HOME={home}/codex", "codex", "resume", "abc", "--sandbox", "read-only"], conversation),
-                    (name, ["env", f"CLAUDE_CONFIG_DIR={home}/claude", "claude", "--permission-mode", "plan", "--resume", "abc"], conversation),
-                ]
             other = str(uuid.uuid4())
-            home = f"{root}/acp-profiles/{lower}"
-            cases += [
-                ("plain codex", ["codex", "resume", "abc", "--sandbox", "read-only"], lower),
-                ("plain claude", ["claude", "--permission-mode", "plan", "--resume", "abc"], lower),
-                ("other profile", ["env", f"CODEX_HOME={root}/acp-profiles/{other}/codex", "codex", "resume", "abc", "--sandbox", "read-only"], lower),
-                ("dotdot", ["env", f"CODEX_HOME={home}/codex/..", "codex", "resume", "abc", "--sandbox", "read-only"], lower),
-                ("wrong harness home", ["env", f"CLAUDE_CONFIG_DIR={home}/codex", "codex", "resume", "abc", "--sandbox", "read-only"], lower),
-                ("not a harness", ["env", f"CODEX_HOME={home}/codex", "bash", "-c", "x"], lower),
-                ("writable", ["env", f"CODEX_HOME={home}/codex", "codex", "resume", "abc", "--sandbox", "workspace-write"], lower),
-                ("no command", ["env", f"CODEX_HOME={home}/codex"], lower),
-                ("extra env", ["env", f"CODEX_HOME={home}/codex", "X=1", "codex", "resume", "abc", "--sandbox", "read-only"], lower),
+            for name in (lower, lower.upper(), lower.replace("-", ""), other):  # real folders: only the record decides
+                for harness in ("codex", "claude"):
+                    (root / "acp-profiles" / name / harness).mkdir(parents=True)
+            codex = lambda home, *rest: ["env", f"CODEX_HOME={home}", "codex", "resume", "abc", *(rest or ("--sandbox", "read-only"))]
+            claude = lambda home: ["env", f"CLAUDE_CONFIG_DIR={home}", "claude", "--permission-mode", "plan", "--resume", "abc"]
+            home = lambda conversation, harness: f"{root}/acp-profiles/{conversation}/{harness}"
+            # (name, conversation id in the record, harness in the record or None to omit it, resume_argv)
+            cases = [
+                ("lower codex", lower, "codex", codex(home(lower, "codex"))),
+                ("lower claude", lower, "claude", claude(home(lower, "claude"))),
+                ("upper codex", lower.upper(), "codex", codex(home(lower.upper(), "codex"))),
+                ("plain codex", lower, "codex", ["codex", "resume", "abc", "--sandbox", "read-only"]),
+                ("plain claude", lower, "claude", ["claude", "--permission-mode", "plan", "--resume", "abc"]),
+                ("no hyphens", lower.replace("-", ""), "codex", codex(home(lower.replace("-", ""), "codex"))),
+                ("other profile", lower, "codex", codex(home(other, "codex"))),
+                ("dotdot", lower, "codex", codex(home(lower, "codex") + "/..")),
+                ("wrong home name", lower, "codex", ["env", f"CLAUDE_CONFIG_DIR={home(lower, 'codex')}", "codex", "resume", "abc", "--sandbox", "read-only"]),
+                ("not a harness", lower, "codex", ["env", f"CODEX_HOME={home(lower, 'codex')}", "bash", "-c", "x"]),
+                ("writable", lower, "codex", codex(home(lower, "codex"), "--sandbox", "workspace-write")),
+                ("no command", lower, "codex", ["env", f"CODEX_HOME={home(lower, 'codex')}"]),
+                ("extra env", lower, "codex", ["env", f"CODEX_HOME={home(lower, 'codex')}", "X=1", "codex", "resume", "abc", "--sandbox", "read-only"]),
+                ("harness differs (env)", lower, "claude", codex(home(lower, "codex"))),
+                ("harness differs (plain)", lower, "claude", ["codex", "resume", "abc", "--sandbox", "read-only"]),
+                ("harness missing", lower, None, codex(home(lower, "codex"))),
+                ("harness invalid", lower, "bash", codex(home(lower, "codex"))),
+                ("harness empty", lower, "", codex(home(lower, "codex"))),
             ]
+            records = []
+            for name, conversation, harness, argv in cases:
+                record = {"event_id": str(uuid.uuid4()), "kind": "session_end", "conversation_id": conversation, "session": "acp:x",
+                          "cwd": str(root / "snap"), "resume_argv": argv, "created_at": "2026-11-24T12:00:00Z"}
+                if harness is not None:
+                    record["harness"] = harness
+                records.append(record)
             python = []
             with mock.patch.dict(os.environ, {"TSTACK_REVIEW_ROOT": str(root)}):
-                for name, argv, conversation in cases:
-                    harness = "claude" if "claude" in argv[:3] or "claude" in argv else "codex"
-                    record = {"event_id": str(uuid.uuid4()), "kind": "session_end", "conversation_id": lower if name in ("lower",) or conversation.lower() == lower else str(uuid.uuid4()),
-                              "session": "acp:x", "harness": harness, "cwd": str(root / "snap"), "resume_argv": argv, "created_at": "2026-11-24T12:00:00Z"}
-                    record["conversation_id"] = conversation if name in ("upper", "lower") else record["conversation_id"]
+                for record in records:
                     try:
                         validate(record)
                         python.append(True)
                     except ValueError:
                         python.append(False)
-            panel_cases = [{"root": str(root), "end": {"resume_argv": argv, "cwd": str(root / "snap"), "conversation_id": conversation}}
-                           for name, argv, conversation in cases]
-            answer = subprocess.run([node, "--input-type=module", "-e", script, json.dumps(panel_cases)], capture_output=True, text=True, check=True)
+            answer = subprocess.run([node, "--input-type=module", "-e", script, json.dumps([{"root": str(root), "end": r} for r in records])],
+                                    capture_output=True, text=True, check=True)
             panel = json.loads(answer.stdout)
-            labels = [f"{name}: {' '.join(argv)[:60]}" for name, argv, _ in cases]
-            self.assertEqual(python, panel, [(l, p, j) for l, p, j in zip(labels, python, panel) if p != j])
-            accepted = {labels[i].split(":")[0] for i, ok in enumerate(panel) if ok}
-            self.assertTrue({"lower", "upper", "plain codex", "plain claude"} <= accepted, accepted)
-            self.assertFalse({"no_hyphens", "braces", "urn", "other profile", "dotdot", "wrong harness home", "not a harness",
-                              "writable", "no command", "extra env"} & accepted, accepted)
+            names = [c[0] for c in cases]
+            self.assertEqual(python, panel, [(n, p, j) for n, p, j in zip(names, python, panel) if p != j])
+            accepted = {n for n, ok in zip(names, panel) if ok}
+            self.assertEqual(accepted, {"lower codex", "lower claude", "upper codex", "plain codex", "plain claude"}, accepted)
 
     def test_read_receipt(self):
         read = {"event_id": str(uuid.uuid4()), "kind": "read", "related_event_id": str(uuid.uuid4()),

@@ -105,6 +105,7 @@ function safeResume(end, root) {
   const profile = profileOf(end, root);
   if (profile === false) return false;
   if (profile) argv = argv.slice(2);
+  if (end.harness !== argv[0]) return false; // the record must name the program the command really runs (as the validator does)
   // A plain folder name directly under the root: rejects ".", "..", "//" and a trailing slash.
   const cut = typeof end.cwd === "string" ? end.cwd.lastIndexOf("/") : -1;
   if (cut < 0 || end.cwd.slice(0, cut) !== root.replace(/\/$/, "")
