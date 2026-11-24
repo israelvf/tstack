@@ -79,23 +79,38 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": request_id, "result": {}})
     elif method == "session/prompt":
         stop = "end_turn"
-        if BEHAVIOUR in ("submit", "bad_then_good", "submit_error", "submit_cancelled"):
+        prompt_text = json.dumps(params.get("prompt"))
+        if BEHAVIOUR == "well_behaved":
+            if "pwned.txt" in prompt_text:
+                send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
+                    "sessionUpdate": "tool_call", "toolCallId": "t3", "kind": "edit", "title": "Edit pwned.txt"}}})
+                ask_permission("t3", "edit")
+                send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
+                    "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "The edit was rejected, so I did not create the file."}}}})
+            elif "echo hi" in prompt_text:
+                send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
+                    "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "I will not run shell commands in a read-only review."}}}})
+        if BEHAVIOUR == "well_behaved" and "submit_review" in prompt_text:
+            BEHAVIOUR_NOW = "submit"
+        else:
+            BEHAVIOUR_NOW = BEHAVIOUR
+        if BEHAVIOUR_NOW in ("submit", "bad_then_good", "submit_error", "submit_cancelled"):
             send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
                 "sessionUpdate": "tool_call", "toolCallId": "t1", "kind": "other", "title": "tstack-review: submit_review"}}})
             if ask_permission("t1", "other") == "a":
                 bad = {"verdict": "APPROVE", "summary": "x", "findings": [{"id": "F1", "severity": "high"}]}
                 call_tool(servers, [bad, GOOD] if BEHAVIOUR == "bad_then_good" else [GOOD])
-        elif BEHAVIOUR == "write":
+        elif BEHAVIOUR_NOW == "write":
             send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
                 "sessionUpdate": "tool_call", "toolCallId": "t2", "kind": "edit", "title": "Edit pwned.txt"}}})
             ask_permission("t2", "edit")
-        elif BEHAVIOUR == "flood":  # a steady stream of updates, then a late answer
+        elif BEHAVIOUR_NOW == "flood":  # a steady stream of updates, then a late answer
             end = time.time() + 3
             while time.time() < end:
                 send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {
                     "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "x"}}}})
                 time.sleep(0.005)
-        elif BEHAVIOUR == "hang":
+        elif BEHAVIOUR_NOW == "hang":
             read_until(lambda m: m.get("method") == "session/cancel")
             stop = "cancelled"
         send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "sid-1", "update": {

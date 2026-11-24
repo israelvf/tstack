@@ -88,6 +88,69 @@ class ReviewSchemaTests(unittest.TestCase):
         self.assertTrue(acp.review_problems("text"))
 
 
+class UnreadableTreeTests(unittest.TestCase):
+    def make(self, temp):
+        root = Path(temp) / "s"
+        (root / "sub").mkdir(parents=True)
+        (root / "sub" / "f").write_text("x")
+        os.chmod(root / "sub", 0)
+        os.chmod(root, 0o555)
+        if os.access(root / "sub", os.R_OK):
+            self.skipTest("running as a user that can read anything")
+        return root
+
+    def restore(self, root):
+        os.chmod(root, 0o755)
+        os.chmod(root / "sub", 0o755)
+
+    def test_an_unreadable_directory_is_an_error_not_an_empty_tree(self):  # ACP-02
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make(temp)
+            try:
+                with self.assertRaises(OSError):
+                    acp.fingerprint(root)
+                with self.assertRaises(OSError):
+                    acp.snapshot_problems(root)
+                with self.assertRaises(acp.Unavailable):
+                    acp.check_snapshot(root)
+            finally:
+                self.restore(root)
+
+
+class ProfileScrubTests(unittest.TestCase):  # ACP-06
+    def test_instruction_and_config_entries_are_removed_on_every_open_but_session_state_stays(self):
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "claude"
+            (profile / "skills" / "evil").mkdir(parents=True)
+            (profile / "skills" / "evil" / "SKILL.md").write_text("x")
+            (profile / "projects").mkdir()
+            (profile / "projects" / "session.jsonl").write_text("history")
+            for name in ("CLAUDE.md", "settings.json"):
+                (profile / name).write_text("stale")
+            victim = Path(temp) / "victim"
+            victim.write_text("keep")
+            (profile / "settings.local.json").symlink_to(victim)
+            (profile / ".claude.json").write_text(json.dumps({"mcpServers": {"x": {}}, "theme": "dark"}))
+            removed = acp.scrub_profile(profile, "claude")
+            for name in ("CLAUDE.md", "settings.json", "settings.local.json", "skills", ".claude.json:mcpServers"):
+                self.assertIn(name, removed)
+            self.assertEqual(sorted(p.name for p in profile.iterdir()), [".claude.json", "projects"])
+            self.assertEqual((profile / "projects" / "session.jsonl").read_text(), "history")
+            self.assertEqual(json.loads((profile / ".claude.json").read_text()), {"theme": "dark"})
+            self.assertEqual(victim.read_text(), "keep")
+            self.assertEqual(acp.scrub_profile(profile, "claude"), [])
+
+    def test_codex_instructions_are_removed_too(self):
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "codex"
+            profile.mkdir()
+            for name in ("AGENTS.md", "hooks.json"):
+                (profile / name).write_text("x")
+            (profile / "sessions").mkdir()
+            self.assertEqual(sorted(acp.scrub_profile(profile, "codex")), ["AGENTS.md", "hooks.json"])
+            self.assertTrue((profile / "sessions").is_dir())
+
+
 class StrictSchemaTests(unittest.TestCase):
     def test_unknown_fields_are_rejected_at_both_levels(self):  # ACP-03
         good = ReviewSchemaTests.GOOD
@@ -394,8 +457,9 @@ class CheckTests(unittest.TestCase):
             old = os.environ.get("TSTACK_REVIEW_ROOT")
             os.environ["TSTACK_REVIEW_ROOT"] = root
             try:
-                report = acp.run_check("fake", spec=fake_spec(FAKE="submit"), timeout=20)
+                report = acp.run_check("fake", spec=fake_spec(FAKE="well_behaved"), timeout=20)
                 self.assertTrue(report["passed"], report)
+                self.assertEqual(report["attempts"], {"write": "request_rejected", "shell": "refused_in_text"})
                 self.assertEqual(list(Path(root).iterdir()), [])
             finally:
                 if old is None:
@@ -413,6 +477,21 @@ class CheckEvidenceTests(unittest.TestCase):
                 report = acp.run_check("fake", spec=fake_spec(FAKE="none"), timeout=20)
                 self.assertFalse(report["passed"])
                 self.assertFalse(report["checks"]["structured_review"])
+            finally:
+                if old is None:
+                    del os.environ["TSTACK_REVIEW_ROOT"]
+                else:
+                    os.environ["TSTACK_REVIEW_ROOT"] = old
+
+    def test_an_acknowledgment_without_any_refusal_is_not_evidence_of_blocking(self):  # ACP-09
+        with tempfile.TemporaryDirectory() as root:
+            old = os.environ.get("TSTACK_REVIEW_ROOT")
+            os.environ["TSTACK_REVIEW_ROOT"] = root
+            try:
+                report = acp.run_check("fake", spec=fake_spec(FAKE="submit"), timeout=20)  # answers every prompt with just "DONE"
+                self.assertFalse(report["passed"])
+                self.assertEqual(report["attempts"], {"write": "no_evidence", "shell": "no_evidence"})
+                self.assertFalse(report["checks"]["write_attempt_blocked"])
             finally:
                 if old is None:
                     del os.environ["TSTACK_REVIEW_ROOT"]
