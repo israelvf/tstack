@@ -279,3 +279,23 @@ sem a saída de ferramentas que possa aparecer no histórico. O painel mostra os
 registros `message` agrupados por conversa/rodada e abre `source_session` com a
 ação do próprio mod. Mensagens sem metadados completos não entram como parecer
 de review.
+
+### Metadados do painel e recibos de leitura
+
+Para o painel agrupar a conversa como chat, o primeiro registro `message` de
+cada task pode (e deve) trazer campos opcionais, todos strings não vazias:
+`title` (título curto legível, por exemplo "Revisão: botão Reviews na barra de
+abas"), `space_id`, `tab_id`, `space_name` e `tab_name` (onde a task nasceu).
+Obtenha os quatro últimos com `herdr-review-log context` (usa `HC_TERMINAL_ID`
+e os rótulos que o Herdr grava; nunca invente valores).
+
+Ao receber e ler uma mensagem registrada, grave o recibo de leitura, uma vez por
+mensagem, sem responder a ele:
+
+```sh
+herdr-review-log read --conversation <uuid> --event <event_id da mensagem lida>
+```
+
+O recibo (`kind=read`, `reader` = sua sessão `hc`) só diz que você leu a
+mensagem; não é aprovação nem confirmação de trabalho. O painel mostra ✓✓ azul
+quando todos os destinatários leram, por recibo ou por terem postado depois.

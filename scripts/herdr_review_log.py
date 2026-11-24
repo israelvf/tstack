@@ -20,6 +20,9 @@ MESSAGE_FIELDS = {
     "destination_session", "repo", "worktree", "base_sha", "head_sha",
     "criteria", "evidence", "text", "created_at", "status",
 }
+# Optional message metadata for the panel: a human title and where the task started.
+OPTIONAL_MESSAGE_FIELDS = {"title", "space_id", "tab_id", "space_name", "tab_name", "group_message_id"}
+READ_FIELDS = {"event_id", "kind", "related_event_id", "conversation_id", "reader", "created_at"}
 DELIVERY_FIELDS = {
     "event_id", "kind", "related_event_id", "conversation_id", "round",
     "sender", "recipient", "sender_model", "recipient_model",
@@ -39,21 +42,36 @@ def validate(record):
     if not isinstance(record, dict):
         raise ValueError("record must be a JSON object")
     kind = record.get("kind")
-    expected = MESSAGE_FIELDS if kind == "message" else DELIVERY_FIELDS if kind == "delivery" else None
+    expected = {"message": MESSAGE_FIELDS, "delivery": DELIVERY_FIELDS, "read": READ_FIELDS}.get(kind)
     if expected is None:
-        raise ValueError("kind must be message or delivery")
-    optional = {"group_message_id"} if kind == "message" else set()
-    extra = set(record) - expected - optional
+        raise ValueError("kind must be message, delivery or read")
+    allowed = expected | OPTIONAL_MESSAGE_FIELDS if kind == "message" else expected
+    extra = set(record) - allowed
     missing = expected - set(record)
     if extra or missing:
         raise ValueError(f"invalid fields (missing={sorted(missing)}, extra={sorted(extra)})")
     try:
         uuid.UUID(record["event_id"])
         uuid.UUID(record["conversation_id"])
-        if "group_message_id" in record:
-            uuid.UUID(record["group_message_id"])
     except (ValueError, TypeError, AttributeError) as exc:
-        raise ValueError("event_id, conversation_id and group_message_id must be UUIDs") from exc
+        raise ValueError("event_id and conversation_id must be UUIDs") from exc
+    if kind == "read":
+        try:
+            uuid.UUID(record["related_event_id"])
+            dt.datetime.fromisoformat(record["created_at"].replace("Z", "+00:00"))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("related_event_id must be a UUID and created_at ISO-8601") from exc
+        if not isinstance(record["reader"], str) or not record["reader"].strip():
+            raise ValueError("reader must be the non-empty hc session that read the message")
+        return
+    for field in OPTIONAL_MESSAGE_FIELDS & set(record):
+        if not isinstance(record[field], str) or not record[field].strip():
+            raise ValueError(f"{field} must be a non-empty string when present")
+    if "group_message_id" in record:
+        try:
+            uuid.UUID(record["group_message_id"])
+        except ValueError as exc:
+            raise ValueError("group_message_id must be a UUID") from exc
     if not isinstance(record["round"], int) or record["round"] < 1:
         raise ValueError("round must be a positive integer")
     for field in ("sender", "recipient", "source_session", "destination_session", "repo", "worktree"):
@@ -144,14 +162,43 @@ def append(path, record):
         os.close(fd)
 
 
+def session_context(terminal):
+    """Space/tab of an hc terminal, from the labels Herdr itself sets."""
+    result = subprocess.run(["hc", "get", terminal, "--json"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise ValueError(f"hc get {terminal} failed")
+    labels = json.loads(result.stdout).get("labels", {})
+    where = labels.get("where", "")
+    space_name, _, tab_name = where.partition(" / ")
+    context = {"space_id": labels.get("herdr.space"), "tab_id": labels.get("herdr.tab"),
+               "space_name": space_name or None, "tab_name": tab_name or None}
+    return {key: value for key, value in context.items() if value}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("append", "validate"))
+    parser.add_argument("command", choices=("append", "validate", "context", "read"))
     parser.add_argument("--file", type=Path, default=default_path(), help="private log path (default: XDG state)")
+    parser.add_argument("--terminal", default=os.environ.get("HC_TERMINAL_ID"),
+                        help="context: terminal to describe; read: the reader session (default: HC_TERMINAL_ID)")
+    parser.add_argument("--conversation", help="read: conversation UUID")
+    parser.add_argument("--event", help="read: event_id of the message that was read")
     args = parser.parse_args(argv)
     path = args.file.expanduser()
     try:
-        if args.command == "append":
+        if args.command == "context":
+            if not args.terminal:
+                raise ValueError("context needs --terminal or HC_TERMINAL_ID")
+            print(json.dumps(session_context(args.terminal)))
+        elif args.command == "read":
+            if not (args.terminal and args.conversation and args.event):
+                raise ValueError("read needs --terminal, --conversation and --event")
+            record = {"event_id": str(uuid.uuid4()), "kind": "read", "related_event_id": args.event,
+                      "conversation_id": args.conversation, "reader": args.terminal,
+                      "created_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+            append(path, record)
+            print(json.dumps({"recorded": True, "event_id": record["event_id"]}))
+        elif args.command == "append":
             record = json.load(sys.stdin)
             append(path, record)
             print(json.dumps({"recorded": True, "event_id": record["event_id"]}))

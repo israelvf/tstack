@@ -66,6 +66,12 @@ After `hc send`, record the returned receipt without retrying. A timeout,
 `status_mismatch`, blocked terminal or uncertain delivery is not approval; read
 the same terminal first and do not resend unless non-delivery is confirmed.
 
+On the first logged message of a task, include `title` (short, human-readable)
+and the `space_id`/`tab_id`/`space_name`/`tab_name` printed by
+`python3 scripts/herdr_review_log.py context`. After reading a logged message,
+record it with `python3 scripts/herdr_review_log.py read --conversation <uuid>
+--event <event_id>`.
+
 Do not edit the reviewed snapshot while Sol is working. Wait with `hc wait`;
 then read the same terminal and correlate the reply to this conversation and
 round. Timeout, error, no reply or review of an older SHA is not approval.

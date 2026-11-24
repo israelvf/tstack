@@ -74,6 +74,12 @@ routing outside the clean text. Preserve each `hc` receipt against its own
 `event_id`. For uncertain delivery, inspect that session before any retry.
 Log timeout, blocked/error, unavailable member and stale-SHA outcomes explicitly.
 
+On the first logged message of a task, include `title` (short, human-readable)
+and the `space_id`/`tab_id`/`space_name`/`tab_name` printed by
+`python3 scripts/herdr_review_log.py context`. After reading a logged message,
+record it with `python3 scripts/herdr_review_log.py read --conversation <uuid>
+--event <event_id>`.
+
 ## Findings and rounds
 
 Send the same request to all eligible reviewers independently. Monitor their

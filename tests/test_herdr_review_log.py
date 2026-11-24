@@ -66,6 +66,22 @@ class ReviewLogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "receipt may contain only"):
             validate(record)
 
+    def test_panel_metadata_is_optional_but_validated(self):
+        record = message()
+        record.update({"title": "Fix tab bar", "space_id": "sp1", "tab_id": "tb1"})
+        validate(record)
+        record["title"] = " "
+        with self.assertRaisesRegex(ValueError, "title"):
+            validate(record)
+
+    def test_read_receipt(self):
+        read = {"event_id": str(uuid.uuid4()), "kind": "read", "related_event_id": str(uuid.uuid4()),
+                "conversation_id": str(uuid.uuid4()), "reader": "t2x", "created_at": "2026-11-13T12:00:02Z"}
+        validate(read)
+        read["text"] = "no"
+        with self.assertRaisesRegex(ValueError, "extra"):
+            validate(read)
+
     def test_log_path_inside_repo_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "outside Git"):
             append(Path(__file__).resolve(), message())
