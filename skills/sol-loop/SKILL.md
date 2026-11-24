@@ -89,8 +89,9 @@ Launch it with `--ask-for-approval never` and keep the snapshot under the stable
 root described in `herdr-messaging`.
 
 Do not edit the reviewed snapshot while Sol is working. Wait with `hc wait`;
-then read the same terminal and correlate the reply to this conversation and
-round. Timeout, error, no reply or review of an older SHA is not approval. If
+then fetch the reply with `herdr-review-send last-reply` (see
+`herdr-messaging`, "Reading a reviewer's reply") and correlate it to this
+conversation and round. Timeout, error, no reply or review of an older SHA is not approval. If
 the terminal is `blocked` by a permission, trust or plan dialog, report which
 one and what it asks; do not answer it for Sol.
 

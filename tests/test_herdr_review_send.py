@@ -43,7 +43,8 @@ class SendTests(unittest.TestCase):
         self.assertEqual(len({m["group_message_id"] for m in messages}), 1)
         self.assertEqual(messages[0]["group_message_id"], result["group_message_id"])
         self.assertEqual(len({m["event_id"] for m in messages}), 2)
-        self.assertEqual({m["text"] for m in messages}, {"Review this."})
+        self.assertEqual(len({m["text"] for m in messages}), 1)  # identical for every recipient
+        self.assertTrue(messages[0]["text"].startswith("Review this."))
         self.assertEqual({m["destination_session"] for m in messages}, {"t1", "t2"})
 
     def test_each_message_is_logged_before_it_is_sent_and_gets_a_delivery_receipt(self):
@@ -149,9 +150,110 @@ class SendTests(unittest.TestCase):
         self.assertIn("cannot execute", result["results"][0]["delivery_not_logged"])
         self.assertTrue(result["group_message_id"])
 
+    def test_the_request_always_names_its_conversation_and_round(self):
+        conv, other = str(uuid.uuid4()), str(uuid.uuid4())
+        added = send.with_header("Please review.", conv, 2)
+        self.assertTrue(added.startswith("Please review.") and added.endswith(f"Conversation: {conv}, round 2"))
+        already = f"Subject: x\n\nConversation: {conv}, round 2\nmore"
+        self.assertEqual(send.with_header(already, conv, 2), already)
+        self.assertTrue(send.with_header(f"Conversation: {conv}, round 20", conv, 2).endswith(f"{conv}, round 2"))
+        self.assertTrue(send.with_header(f"Conversation: {other}, round 2", conv, 2).endswith(f"{conv}, round 2"))
+        _, records, sends = self.run_send(args(conversation=conv, round=2), text="No header here.")
+        sent = [r["text"] for r in records if r["kind"] == "message"]
+        self.assertTrue(all(t.endswith(f"Conversation: {conv}, round 2") for t in sent))
+        self.assertEqual({t for t in sent}, {c[-1] for c in sends})  # what was logged is exactly what was sent
+
     def test_recipient_spec_must_be_complete(self):
         with self.assertRaisesRegex(ValueError, "missing"):
             send.parse_recipient("label=x,target=y")
+
+
+class HistoryTests(unittest.TestCase):
+    CONV = "11111111-2222-3333-4444-555555555555"
+
+    def jsonl(self, path, rows):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        return path
+
+    def codex_rows(self, cwd, turns):
+        rows = [{"type": "session_meta", "payload": {"id": "sid", "cwd": cwd}}]
+        for brief, steps in turns:
+            rows.append({"type": "response_item", "payload": {"type": "message", "role": "user",
+                         "content": [{"type": "input_text", "text": brief}]}})
+            for phase, text in steps:
+                if phase == "done":
+                    rows.append({"type": "event_msg", "payload": {"type": "task_complete"}})
+                else:
+                    rows.append({"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": phase,
+                                 "content": [{"type": "output_text", "text": text}]}})
+        return rows
+
+    def test_codex_returns_the_final_answer_of_the_requested_round_not_commentary(self):
+        conv = self.CONV
+        rows = self.codex_rows("/snap", [
+            (f"Conversation: {conv}, round 1\nbrief one", [("commentary", "looking"), ("final_answer", "Summary: um\n\nAPPROVE"), ("done", "")]),
+            (f"Conversation: {conv}, round 2\nRound 1 ledger, round 1 base", [("commentary", "again"), ("final_answer", "Summary: dois\n\nCHANGES_REQUESTED"), ("done", "")]),
+        ])
+        with tempfile.TemporaryDirectory() as temp:
+            path = self.jsonl(Path(temp) / "r.jsonl", rows)
+            self.assertEqual(send.final_reply("codex", path, conv, 1), ("Summary: um\n\nAPPROVE", None))
+            self.assertEqual(send.final_reply("codex", path, conv, 2), ("Summary: dois\n\nCHANGES_REQUESTED", None))
+            self.assertEqual(send.final_reply("codex", path, conv, None)[0], "Summary: dois\n\nCHANGES_REQUESTED")
+            self.assertIn("no request", send.final_reply("codex", path, conv, 3)[1])
+            self.assertIn("no request", send.final_reply("codex", path, str(uuid.uuid4()), 1)[1])
+
+    def test_codex_reports_a_turn_that_is_not_finished(self):
+        conv = self.CONV
+        with tempfile.TemporaryDirectory() as temp:
+            only_commentary = self.jsonl(Path(temp) / "a.jsonl", self.codex_rows("/s", [(f"Conversation: {conv}, round 1", [("commentary", "working")])]))
+            self.assertIn("not written a final message", send.final_reply("codex", only_commentary, conv, 1)[1])
+            no_complete = self.jsonl(Path(temp) / "b.jsonl", self.codex_rows("/s", [(f"Conversation: {conv}, round 1", [("final_answer", "APPROVE")])]))
+            self.assertIn("not complete", send.final_reply("codex", no_complete, conv, 1)[1])
+
+    def claude_rows(self, turns):
+        rows = []
+        for brief, steps in turns:
+            rows.append({"type": "user", "message": {"role": "user", "content": brief}})
+            for stop, text in steps:
+                rows.append({"type": "assistant", "message": {"role": "assistant", "stop_reason": stop,
+                             "content": [{"type": "text", "text": text}] if text else [{"type": "tool_use", "name": "Read"}]}})
+                if stop == "tool_use":
+                    rows.append({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "x"}]}})
+        return rows
+
+    def test_claude_returns_the_end_turn_text_and_ignores_text_written_before_a_tool_call(self):
+        conv = self.CONV
+        rows = self.claude_rows([
+            (f"Conversation: {conv}, round 1", [("tool_use", "Status: reading the patch"), ("end_turn", "Summary: pronto\n\nAPPROVE")]),
+            (f"Conversation: {conv}, round 2", [("tool_use", "thinking out loud")]),
+        ])
+        with tempfile.TemporaryDirectory() as temp:
+            path = self.jsonl(Path(temp) / "c.jsonl", rows)
+            self.assertEqual(send.final_reply("claude", path, conv, 1), ("Summary: pronto\n\nAPPROVE", None))
+            self.assertIn("not written a final message", send.final_reply("claude", path, conv, 2)[1])
+
+    def test_session_file_is_found_by_conversation_and_folder_even_through_a_symlink(self):
+        conv = self.CONV
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as base, mock.patch.dict(os.environ, {"HOME": home}):
+            real = Path(base) / "real"; (real / "snap").mkdir(parents=True)
+            alias = Path(base) / "alias"; alias.symlink_to(real)
+            canonical = str((real / "snap").resolve())
+            mine = self.jsonl(send.claude_project_dir(canonical) / "mine.jsonl", self.claude_rows([(f"Conversation: {conv}, round 1", [])]))
+            self.jsonl(send.claude_project_dir(canonical) / "other.jsonl", self.claude_rows([(f"Conversation: {uuid.uuid4()}, round 1", [])]))
+            self.assertEqual(send.find_session_file("claude", str(alias / "snap"), 0, conv), (mine, None))
+            self.jsonl(send.claude_project_dir(canonical) / "twin.jsonl", self.claude_rows([(f"Conversation: {conv}, round 1", [])]))
+            self.assertIn("more than one", send.find_session_file("claude", canonical, 0, conv)[1])
+            self.assertIn("not found", send.find_session_file("codex", canonical, 0, conv)[1])
+
+    def test_a_working_reviewer_and_a_non_agent_terminal_are_refused(self):
+        a = types.SimpleNamespace(session="t1", conversation=self.CONV, round=1)
+        with mock.patch.object(send, "hc_json", lambda *x: {"argv": ["codex"], "state": "live", "status": {"state": "working"}, "cwd": "/s", "created_ms": 0}):
+            with self.assertRaisesRegex(ValueError, "still working"):
+                send.reply_from_history(a)
+        with mock.patch.object(send, "hc_json", lambda *x: {"argv": ["sh"], "state": "live", "cwd": "/s"}):
+            with self.assertRaisesRegex(ValueError, "not a claude or codex"):
+                send.reply_from_history(a)
 
 
 class ReceiveTests(unittest.TestCase):

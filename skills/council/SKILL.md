@@ -93,7 +93,8 @@ one `incoming` group message, before waiting on any other reviewer or
 verifying findings. Tell each reviewer to write its review as the final message
 in its own session, not with `hc send`, opening it with a one-line `Summary:`
 (see `herdr-messaging`) that you copy verbatim into the log's `summary` field,
-and read it with `hc read` once idle.
+and fetch it with `herdr-review-send last-reply` once its turn is complete (see
+`herdr-messaging`, "Reading a reviewer's reply").
 Mark a permission, folder-trust or plan dialog as blocked, report which one and
 what it asks, and do not answer it for the reviewer or record it as a final
 review.

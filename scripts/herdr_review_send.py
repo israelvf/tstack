@@ -4,12 +4,14 @@
 `send` logs one outgoing record per recipient, all sharing ONE group_message_id and the
 same text, then delivers each with `hc send` and logs the receipt. `receive` logs a
 reviewer's final reply, copying its leading "Summary:" line into the `summary` field.
+`last-reply` prints a reviewer's final message exactly as its harness recorded it.
 
 Both build on `herdr-review-log`, which validates every record and keeps the log private.
 """
 
 import argparse
 import datetime as dt
+import glob
 import json
 import os
 import re
@@ -136,10 +138,17 @@ def send_one(args, text, recipient, group, extra, sender_session):
     return result
 
 
+def with_header(text, conversation, round_number):
+    """Make sure the request names its conversation and round, which is how last-reply finds the right turn."""
+    header = f"Conversation: {conversation}, round {round_number}"
+    return text if re.search(rf"{re.escape(header)}(?!\d)", text) else f"{text.rstrip()}\n\n{header}"
+
+
 def send_messages(args, text):
     sender_session = os.environ.get("HC_TERMINAL_ID")
     if not sender_session:
         raise ValueError("send needs HC_TERMINAL_ID (run inside a Herdr terminal)")
+    text = with_header(text, args.conversation, args.round)  # logged and sent identically
     group = str(uuid.uuid4())  # ONE id for the whole brief, so the panel shows one bubble
     extra = {}
     if args.title:
@@ -158,6 +167,127 @@ def send_messages(args, text):
         except Exception as exc:  # one broken recipient must not stop the others or hide those already sent
             results.append({"target": recipient["target"], "sent": False, "reason": f"{type(exc).__name__}: {exc}"})
     return {"conversation_id": args.conversation, "round": args.round, "group_message_id": group, "results": results}
+
+
+# ---- The reviewer's own history -----------------------------------------------------
+# A terminal screen can show something other than the reply (the TUI may be scrolled up, or the text is
+# hard-wrapped). Codex and Claude Code both record the final message of every turn in their own history, with
+# the exact text, so the reply is read from there. Only the final message is read: no tool calls or output.
+
+def claude_project_dir(cwd):
+    return Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+
+
+def mentions(path, conversation):
+    try:
+        return conversation.encode() in path.read_bytes()
+    except OSError:
+        return False
+
+
+def find_session_file(harness, cwd, created_ms, conversation):
+    """The one history file of this harness, in `cwd`, that names the conversation: (path, None) or (None, reason)."""
+    floor = created_ms / 1000 - 5
+    spellings = {cwd, os.path.realpath(cwd)}
+    found = []
+    try:
+        if harness == "claude":
+            for spelling in spellings:
+                found += [path for path in claude_project_dir(spelling).glob("*.jsonl")
+                          if path.stat().st_mtime >= floor and mentions(path, conversation)]
+        else:
+            for name in glob.glob(str(Path.home() / ".codex" / "sessions" / "*" / "*" / "*" / "rollout-*.jsonl")):
+                path = Path(name)
+                if path.stat().st_mtime < floor or not mentions(path, conversation):
+                    continue
+                try:
+                    with path.open(encoding="utf-8") as handle:
+                        meta = json.loads(handle.readline()).get("payload", {})
+                except (OSError, ValueError):
+                    continue
+                if isinstance(meta, dict) and meta.get("cwd") in spellings:
+                    found.append(path)
+    except OSError:
+        return None, "session history unreadable"
+    found = sorted(set(found))
+    if len(found) == 1:
+        return found[0], None
+    return None, "session history not found" if not found else "more than one session history matches this conversation"
+
+
+def entries(path):
+    for line in path.open(encoding="utf-8"):
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+
+def text_of(content):
+    if isinstance(content, str):
+        return content
+    return "".join(block.get("text", "") for block in content or []
+                   if isinstance(block, dict) and block.get("type") in ("text", "input_text", "output_text"))
+
+
+def final_reply(harness, path, conversation, round_number=None):
+    """The final message of the last turn that was started by a request naming this conversation (and round).
+
+    Returns (text, None) or (None, reason). A turn is a user message followed by the harness's messages; only a
+    message the harness itself marks as final counts (Codex: phase final_answer, complete at task_complete;
+    Claude Code: stop_reason end_turn), never the commentary written while it works.
+    """
+    # The request header names both ("Conversation: <uuid>, round 2"); "round 2" alone also appears in later briefs.
+    marker = f"{conversation}, round {round_number}" if round_number else None
+    turns = []  # one dict per matching request, in order
+    current = None
+    for entry in entries(path):
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        if harness == "codex":
+            is_message = entry.get("type") == "response_item" and payload.get("type") == "message"
+            role = payload.get("role") if is_message else None
+            text = text_of(payload.get("content")) if is_message else ""
+            is_final = role == "assistant" and payload.get("phase") == "final_answer"
+            turn_done = entry.get("type") == "event_msg" and payload.get("type") == "task_complete"
+        else:
+            role = entry.get("type") if entry.get("type") in ("user", "assistant") else None
+            text = text_of(message.get("content")) if role else ""
+            is_final = role == "assistant" and message.get("stop_reason") == "end_turn"
+            turn_done = False
+        if role == "user" and text.strip():
+            matches = re.search(rf"{re.escape(marker)}(?!\d)", text) is not None if marker else conversation in text
+            current = {"reply": None, "complete": False} if matches else None
+            if current:
+                turns.append(current)
+        elif current is not None:
+            if is_final and text.strip():
+                current["reply"], current["complete"] = text.strip(), harness == "claude"
+            elif turn_done and current["reply"]:
+                current["complete"] = True
+    if not turns:
+        return None, "no request for this conversation" + (f" and round {round_number}" if round_number else "") + " in the history"
+    last = turns[-1]
+    if last["reply"] is None:
+        return None, "the reviewer has not written a final message yet"
+    return (last["reply"], None) if last["complete"] else (None, "the reviewer's turn is not complete yet")
+
+
+def reply_from_history(args):
+    info = hc_json("get", args.session)
+    argv = info.get("argv") or []
+    harness = argv[0] if argv and argv[0] in ("claude", "codex") else None
+    if not harness:
+        raise ValueError(f"{args.session} is not a claude or codex session; use hc read")
+    if info.get("state") == "live" and (info.get("status") or {}).get("state") == "working":
+        raise ValueError("the reviewer is still working; wait for it to finish")
+    path, reason = find_session_file(harness, info.get("cwd", ""), info.get("created_ms", 0), args.conversation)
+    if not path:
+        raise ValueError(reason)
+    text, reason = final_reply(harness, path, args.conversation, args.round)
+    if text is None:
+        raise ValueError(reason)
+    return text
 
 
 def receive_message(args, text):
@@ -193,11 +323,11 @@ def receive_message(args, text):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("send", "receive"))
+    parser.add_argument("command", choices=("send", "receive", "last-reply"))
     parser.add_argument("--file", type=Path, default=None, help="log file (default: the private XDG log)")
     parser.add_argument("--conversation", required=True, help="conversation UUID")
-    parser.add_argument("--round", type=int, required=True)
-    parser.add_argument("--text-file", type=Path, required=True, help="clean message text (UTF-8)")
+    parser.add_argument("--round", type=int, help="round number (required for send and receive)")
+    parser.add_argument("--text-file", type=Path, help="clean message text (UTF-8); for receive, or use --from-history")
     send = parser.add_argument_group("send")
     send.add_argument("--to", action="append", default=[], help="label=...,model=...,target=<hc address or name>; repeat per recipient")
     send.add_argument("--repo"); send.add_argument("--worktree"); send.add_argument("--base-sha"); send.add_argument("--head-sha")
@@ -208,12 +338,28 @@ def main(argv=None):
     receive = parser.add_argument_group("receive")
     receive.add_argument("--session", help="the reviewer's hc address that wrote the reply")
     receive.add_argument("--reader", help="who read it (default: HC_TERMINAL_ID)")
+    receive.add_argument("--from-history", action="store_true",
+                         help="take the reviewer's final message from its harness history instead of --text-file")
     args = parser.parse_args(argv)
     try:
         uuid.UUID(args.conversation)
-        text = args.text_file.read_text(encoding="utf-8").strip()
+        if args.command == "last-reply":
+            if not args.session:
+                raise ValueError("last-reply needs --session")
+            print(reply_from_history(args))
+            return 0
+        if args.round is None:
+            raise ValueError(f"{args.command} needs --round")
+        if args.command == "receive" and args.from_history:
+            if not args.session:
+                raise ValueError("receive needs --session")
+            text = reply_from_history(args)
+        else:
+            if not args.text_file:
+                raise ValueError(f"{args.command} needs --text-file" + (" or --from-history" if args.command == "receive" else ""))
+            text = args.text_file.read_text(encoding="utf-8").strip()
         if not text:
-            raise ValueError("the text file is empty")
+            raise ValueError("the message text is empty")
         if args.command == "send":
             required = ("repo", "worktree", "base_sha", "head_sha", "sender_name", "sender_model")
             missing = [name for name in required if not getattr(args, name)] + ([] if args.to else ["to"])

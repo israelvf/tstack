@@ -294,9 +294,37 @@ herdr-review-send receive --conversation <uuid> --round 1 --session <address> --
   idle sessions, skips sessions that are not live or are working/blocked (and says
   why), and keeps going if one delivery cannot be logged. `--title` also records the
   space and tab; use it on a task's first message.
-- `receive` takes a reviewer's clean final message from a file, reuses the snapshot
-  fields of your request from the log, moves a leading `Summary:` line into the
-  `summary` field unchanged, and records your read receipt.
+- `receive` takes a reviewer's clean final message from a file (or, with
+  `--from-history`, from the reviewer's own history), reuses the snapshot fields of
+  your request from the log, moves a leading `Summary:` line into the `summary` field
+  unchanged, and records your read receipt.
+- `last-reply` prints a reviewer's final message exactly as its harness recorded it
+  (see "Reading a reviewer's reply").
+
+## Reading a reviewer's reply
+
+A terminal screen is a poor source for a reply: if someone scrolled the pane, a
+harness can show its own scrollback (Codex prints "New activity · ↓ Back to bottom ·
+esc") and the reply is not on screen; long lines are also hard-wrapped. So the
+coordinator reads the reply from the reviewer's own history with
+`herdr-review-send last-reply`:
+
+```sh
+herdr-review-send last-reply --conversation <uuid> --round <n> --session <address>
+```
+
+- It prints only the final message of the turn that answered that request, with the
+  original Markdown. Codex marks it `phase: final_answer` and closes the turn with
+  `task_complete`; Claude Code marks it `stop_reason: end_turn`. Commentary written
+  while the reviewer works, tool calls and tool output are never read.
+- It refuses while the reviewer is working or the turn is incomplete, and when more
+  than one history matches. It works for an ended session too.
+- It finds the turn by the line `Conversation: <uuid>, round <n>`; `send` adds it to a
+  request that lacks it.
+- After `hc send`, `hc wait` can report `idle` or `done` from before the reviewer
+  started. A reply is ready when `hc get` shows a `turn` greater than the one in the
+  send receipt and a status that is not `working`.
+- Nobody presses keys in a reviewer's session to leave its scrollback view.
 
 ## Message log
 

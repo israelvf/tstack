@@ -87,9 +87,9 @@ A read-only reviewer must never need a permission dialog to do its job.
 - **Reply on screen, not with `hc send`.** `hc` talks to the core through a
   socket and lock outside a read-only sandbox, so a sandboxed reviewer that
   tries `hc send` stops at an approval prompt. Tell reviewers to write the
-  review as their final message in their own session. The coordinator does
-  `hc wait`, then `hc read <address> --lines <n>` once the session is idle,
-  correlates the text with the conversation, round and SHA, and logs it. The
+  review as their final message in their own session. The coordinator waits for
+  the turn to finish, reads that final message (see "Reading a reviewer's
+  reply" below), correlates it with the conversation, round and SHA, and logs it. The
   reviewer never touches the log. Replying with `hc send` stays valid for peers
   that are not read-only reviewers.
 - **The reviewer writes its own summary.** In the request, ask the reviewer to
@@ -141,9 +141,36 @@ herdr-review-send receive --conversation <uuid> --round 1 --session <reviewer ad
 `send` logs each message before sending it, uses `--if idle` only for idle sessions,
 skips sessions that are not live or are working or blocked (reporting why), and keeps
 going if one delivery cannot be logged. `--title` also logs the space and tab. Pass
-`--title` on the first message of a task only. `receive` reuses the snapshot fields of
+`--title` on the first message of a task only. A request that does not already contain
+the line `Conversation: <uuid>, round <n>` gets it appended before it is logged and
+sent (the same text, everywhere). `receive` reuses the snapshot fields of
 your request from the log, moves a leading `Summary:` line into the `summary` field
 (unchanged) and records your read receipt. It never writes a summary for the reviewer.
+
+### Reading a reviewer's reply
+
+- **Wait for the turn, not just for a status.** Right after `hc send`, `hc wait` can
+  still report `idle` or `done` from before the reviewer started. Take the `turn`
+  from the send receipt: the reply is ready only when `hc get` shows a `turn` greater
+  than that and a status that is not `working`.
+- **Fetch the text from the reviewer's own history.**
+  `herdr-review-send last-reply --conversation <uuid> --round <n> --session <address>`
+  prints the final message of the turn that answered that request, exactly as the
+  harness recorded it: original Markdown, no terminal wrapping, no tool calls or tool
+  output (Codex marks it `final_answer` and closes the turn with `task_complete`;
+  Claude Code marks it `end_turn`). It refuses while the reviewer is still working, if
+  the turn is not complete, or if more than one history matches. It finds the turn by
+  the line `Conversation: <uuid>, round <n>`, which `herdr-review-send send` adds to a
+  request that lacks it. `herdr-review-send receive ... --from-history` reads and logs
+  in one step. This works after the session has ended too.
+- **Do not rely on the screen.** `hc read` returns what the terminal viewport shows. If
+  someone scrolled the pane, the harness can show its own scrollback with a banner such
+  as "New activity · ↓ Back to bottom · esc" and the reply is simply not on screen; text
+  that is hard-wrapped or has lost its Markdown is also no longer the original. Use
+  `hc read` to check the state, or when no history is found. Never press keys in the
+  reviewer's session to bring it back to the bottom.
+- Read only the final message from a history. Do not read tool calls, tool output or
+  earlier turns, and do not read histories of sessions that are not yours.
 
 ### Cleanup
 
