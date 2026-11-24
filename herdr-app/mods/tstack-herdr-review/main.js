@@ -768,8 +768,11 @@ export default class TStackReviews extends View {
     const t = theme();
     const live = new Set(terminals().filter((terminal) => (terminal.state ?? "live") === "live").map((terminal) => terminal.address));
     const task = this.selected ? tasks(this.messages).find((item) => item.id === this.selected) : null;
+    // The task list starts with a date divider, which already separates it from the bar; a border as well would
+    // draw two lines in a row. The conversation, and the list when it is empty, keep the border.
+    const bar = Boolean(task) || tasks(this.messages).length === 0;
     return v_flex().id("tstack-herdr-review").size_full().min_w(0).min_h(0).bg(t.background).text_color(t.foreground)
-      .child(h_flex().w_full().px(16).py(12).gap(12).items_center().border_b(1).border_color(t.border)
+      .child(h_flex().w_full().px(16).py(12).gap(12).items_center().when(bar, (el) => el.border_b(1).border_color(t.border))
         .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(14).child("Reviews"))
         .child(div().px(10).py(5).rounded(7).cursor_pointer().bg(t.raised).text_size(11.5)
           .on_click((_event, cx) => cx.spawn((cx) => this.refresh(cx))).child("Refresh")))
