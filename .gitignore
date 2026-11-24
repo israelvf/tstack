@@ -6,6 +6,5 @@ herdr-app/mods/*/gpui-kit.d.ts
 herdr-app/mods/*/jsconfig.json
 
 # Local tooling output and editor backups
-graphify-out/
 *.bak
 .DS_Store
