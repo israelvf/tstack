@@ -325,10 +325,16 @@ herdr-review-send last-reply --conversation <uuid> --round <n> --session <addres
   A request whose headers name two rounds is refused.
 - A history is tied to a terminal by folder, conversation and start time (it must have
   begun after the terminal was created, and before it ended); one that began earlier, or
-  whose start cannot be told, is refused. Two terminals of one harness started within
-  seconds in the same folder cannot be told apart, so a review does not start two of them
-  there; and when the log recorded where the request went, any other session is refused.
-  A session resumed with `--resume` continues an older history, so use `hc read` for it.
+  whose start cannot be told, is refused, and so is a choice that an undated candidate
+  could change. Because histories are keyed by folder, it also requires that no other
+  terminal of the same harness, live or ended (`hc ls --all`), ran in that folder; if one
+  did, `last-reply` refuses and names it, so each reviewer of a harness gets its own folder
+  (one snapshot folder per conversation does). Terminals removed with `hc rm` and agents
+  run outside `hc` are invisible to that check. When the log recorded where the request
+  went, any other session is refused. A session resumed with `--resume` continues an older
+  history, so use `hc read` for it.
+- A header inside a fenced code block is not a header, and conversation ids are matched
+  without regard to case.
 - After `hc send`, `hc wait` can report `idle` or `done` from before the reviewer
   started. A reply is ready when `hc get` shows a `turn` greater than the one in the
   send receipt and a status that is not `working`.

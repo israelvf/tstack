@@ -349,6 +349,58 @@ class HistoryTests(unittest.TestCase):
                     mock.patch.object(send, "final_reply", return_value=("OK", None)):
                 self.assertEqual(send.reply_from_history(a), "OK")
 
+    def test_a_header_inside_a_code_block_is_not_a_header(self):
+        conv = self.CONV
+        example = f"Reply format example:\n```\nConversation: {conv}, round 1\n```\nDone."
+        self.assertEqual(send.header_rounds(example, conv), set())
+        self.assertTrue(send.with_header(example, conv, 2).endswith(f"Conversation: {conv}, round 2"))  # not refused as a conflict
+        unclosed = "Intro\n```\nsome code never closed"
+        fixed = send.with_header(unclosed, conv, 2)
+        self.assertEqual(send.header_rounds(fixed, conv), {2})
+        mixed = f"{example}\n\nConversation: {conv}, round 2\n"
+        self.assertEqual(send.header_rounds(mixed, conv), {2})
+        rows = self.codex_rows("/s", [
+            (f"Subject: r2\n\n{example}\n\nConversation: {conv}, round 2\n", [("final_answer", "APPROVE ROUND TWO"), ("done", "")])])
+        with tempfile.TemporaryDirectory() as temp:
+            path = self.jsonl(Path(temp) / "r.jsonl", rows)
+            self.assertIn("no request", send.final_reply("codex", path, conv, 1)[1])
+            self.assertEqual(send.final_reply("codex", path, conv, 2)[0], "APPROVE ROUND TWO")
+
+    def test_an_upper_case_conversation_id_is_found_everywhere(self):
+        conv = self.CONV
+        upper = conv.upper()
+        self.assertEqual(send.header_rounds(f"Conversation: {upper}, round 3", conv), {3})
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            path = self.jsonl(send.claude_project_dir("/snap") / "u.jsonl", self.claude_rows([(f"Conversation: {upper}, round 1", [])]))
+            self.assertTrue(send.mentions(path, conv))
+            self.assertEqual(send.find_session_file("claude", "/snap", 0, None, conv), (path, None))
+
+    def test_an_undated_candidate_makes_the_choice_ambiguous(self):
+        conv = self.CONV
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            folder = send.claude_project_dir("/snap")
+            self.jsonl(folder / "dated.jsonl", self.claude_rows([(f"Conversation: {conv}, round 1", [])]))
+            self.assertEqual(send.find_session_file("claude", "/snap", 0, None, conv)[0], folder / "dated.jsonl")
+            self.jsonl(folder / "undated.jsonl", [{"type": "user", "message": {"content": f"Conversation: {conv}, round 1"}}])
+            self.assertIn("may match", send.find_session_file("claude", "/snap", 0, None, conv)[1])
+
+    def test_a_folder_shared_with_another_terminal_of_the_harness_is_refused(self):
+        conv = self.CONV
+        info = {"address": "t5", "argv": ["claude"], "state": "finished", "cwd": "/snap", "created_ms": 0}
+        a = types.SimpleNamespace(session="t5", conversation=conv, round=1, file=Path("/nonexistent/log.jsonl"))
+        def hc(rows):
+            return lambda *x: {"terminals": rows} if x[:1] == ("ls",) else info
+        mine = {"address": "t5", "agent": "claude-code", "cwd": "/snap", "state": "finished"}
+        with mock.patch.object(send, "find_session_file", return_value=(Path("/x"), None)), mock.patch.object(send, "final_reply", return_value=("OK", None)):
+            for other in ({"address": "t6", "agent": "claude", "cwd": "/snap", "state": "finished"},
+                          {"address": "t6", "agent": "claude-code", "cwd": "/snap", "state": "live"}):
+                with mock.patch.object(send, "hc_json", hc([mine, other])), self.assertRaisesRegex(ValueError, "t6 also ran claude"):
+                    send.reply_from_history(a)
+            for harmless in ({"address": "t6", "agent": "codex", "cwd": "/snap", "state": "live"},      # another harness
+                             {"address": "t6", "agent": "claude-code", "cwd": "/elsewhere", "state": "live"}):  # another folder
+                with mock.patch.object(send, "hc_json", hc([mine, harmless])):
+                    self.assertEqual(send.reply_from_history(a), "OK")
+
     def test_a_working_reviewer_and_a_non_agent_terminal_are_refused(self):
         a = types.SimpleNamespace(session="t1", conversation=self.CONV, round=1)
         with mock.patch.object(send, "hc_json", lambda *x: {"argv": ["codex"], "state": "live", "status": {"state": "working"}, "cwd": "/s", "created_ms": 0}):

@@ -128,6 +128,8 @@ class CleanupTests(unittest.TestCase):
         states = iter([{"state": "live"}, {"state": "live"}, {"state": "finished"}])  # exits a moment after kill
 
         def fake_hc(*args):
+            if args[0] == "ls":
+                return {"terminals": []}
             return info if args[0] == "get" and not hasattr(fake_hc, "killed") else next(states)
 
         def fake_run(cmd, **kwargs):
@@ -148,7 +150,7 @@ class CleanupTests(unittest.TestCase):
         from scripts import herdr_review_cleanup as cleanup
         info = {"argv": ["codex", "--sandbox", "read-only"], "cwd": "/review/snap", "created_ms": 0}
         clock = iter(range(0, 100))
-        with mock.patch.object(cleanup, "hc_json", lambda *a: {**info, "state": "live"}), \
+        with mock.patch.object(cleanup, "hc_json", lambda *a: {"terminals": []} if a[0] == "ls" else {**info, "state": "live"}), \
                 mock.patch.object(cleanup.subprocess, "run", lambda *a, **k: mock.Mock(returncode=0)), \
                 mock.patch.object(cleanup, "find_resume_id", return_value=("abc", None)), \
                 mock.patch.object(cleanup.time, "monotonic", lambda: next(clock)), \
@@ -156,6 +158,35 @@ class CleanupTests(unittest.TestCase):
             ended, problem = end_session(str(uuid.uuid4()), {"address": "t1"}, Path("/tmp/none.jsonl"))
         self.assertFalse(ended)
         self.assertIn("did not end", problem)
+
+
+    def test_undated_candidates_and_upper_case_ids_in_the_resume_lookup(self):
+        import time
+        conv = str(uuid.uuid4())
+        created = int(time.time() * 1000) - 120000
+        dated = lambda c: json.dumps({"type": "user", "timestamp": "2099-01-01T00:00:00Z", "message": {"content": f"Conversation: {c}"}})
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            project = claude_project_dir("/snap"); project.mkdir(parents=True)
+            (project / "up.jsonl").write_text(dated(conv.upper()))
+            self.assertEqual(find_resume_id("claude", "/snap", created, conv), ("up", None))   # upper case is found
+            (project / "undated.jsonl").write_text(json.dumps({"type": "user", "message": {"content": f"Conversation: {conv}"}}))
+            self.assertIn("may match", find_resume_id("claude", "/snap", created, conv)[1])
+
+    def test_a_folder_shared_with_another_terminal_gives_no_resume_info(self):
+        from scripts import herdr_review_cleanup as cleanup
+        info = {"argv": ["claude", "--permission-mode", "plan"], "cwd": "/snap", "created_ms": 0}
+        rows = [{"address": "t1", "agent": "claude-code", "cwd": "/snap", "state": "live"},
+                {"address": "t2", "agent": "claude", "cwd": "/snap", "state": "finished"}]
+        logged = []
+        def hc(*args):
+            if args[0] == "ls":
+                return {"terminals": rows}
+            return {**info, "state": "finished"}
+        with mock.patch.object(cleanup, "hc_json", hc), mock.patch.object(cleanup.subprocess, "run", lambda *a, **k: logged.append(a) or mock.Mock(returncode=0)):
+            ended, problem = end_session(str(uuid.uuid4()), {"address": "t1"}, Path("/tmp/none.jsonl"))
+        self.assertTrue(ended)                         # it is still ended
+        self.assertIn("same folder", problem)           # but no resume command is recorded
+        self.assertFalse(any("append" in str(call) for call in logged))
 
 
 if __name__ == "__main__":

@@ -149,7 +149,10 @@ def with_header(text, conversation, round_number):
         return text
     if rounds:
         raise ValueError(f"the brief already names round {sorted(rounds)} of this conversation, not round {round_number}")
-    return f"{text.rstrip()}\n\nConversation: {conversation}, round {round_number}"
+    body = text.rstrip()
+    if len(re.findall(r"^[ \t]*(?:```|~~~)", body, re.MULTILINE)) % 2:  # an unclosed fence would swallow the header
+        body += "\n```"
+    return f"{body}\n\nConversation: {conversation}, round {round_number}"
 
 
 def send_messages(args, text):
@@ -188,9 +191,18 @@ HEADER = re.compile(r"^[ \t]*Conversation:[ \t]*([0-9a-fA-F-]{36}),[ \t]*round[ 
 SLACK_SECONDS = 5
 
 
+FENCE = re.compile(r"^[ \t]*(```|~~~).*?(?:^[ \t]*\1[ \t]*$|\Z)", re.MULTILINE | re.DOTALL)
+
+
+def without_code(text):
+    """The text without fenced code blocks (an unclosed fence runs to the end): an example header in a code
+    block is not a header."""
+    return FENCE.sub("", text)
+
+
 def header_rounds(text, conversation):
     """The set of rounds the headers of `text` name for this conversation (empty: not a request for it)."""
-    return {int(number) for found, number in HEADER.findall(text) if found.lower() == conversation.lower()}
+    return {int(number) for found, number in HEADER.findall(without_code(text)) if found.lower() == conversation.lower()}
 
 
 def claude_project_dir(cwd):
@@ -198,8 +210,9 @@ def claude_project_dir(cwd):
 
 
 def mentions(path, conversation):
+    """Does the history name the conversation? Ids are compared without regard to case, like the headers."""
     try:
-        return conversation.encode() in path.read_bytes()
+        return conversation.lower().encode() in path.read_bytes().lower()
     except OSError:
         return False
 
@@ -280,10 +293,10 @@ def find_session_file(harness, cwd, created_ms, finished_ms, conversation):
                 found.append(path)
     except OSError:
         return None, "session history unreadable"
-    if len(found) == 1:
+    if len(found) == 1 and not unconfirmed:
         return found[0], None
     if found:
-        return None, "more than one session history matches this conversation"
+        return None, "more than one session history may match this conversation"
     return None, ("a history names this conversation but cannot be tied to this terminal" if unconfirmed
                   else "session history not found")
 
@@ -340,6 +353,18 @@ def addressed_to(log_file, conversation, round_number):
             and row.get("conversation_id") == conversation and (round_number is None or row.get("round") == round_number)}
 
 
+AGENT_HARNESS = {"claude": "claude", "claude-code": "claude", "codex": "codex"}
+
+
+def folder_sharers(harness, cwd, address):
+    """Other terminals (live or ended) of the same harness that ran in the same folder."""
+    spellings = {cwd, os.path.realpath(cwd)}
+    listing = hc_json("ls", "--all")
+    rows = listing.get("terminals", []) if isinstance(listing, dict) else []
+    return sorted(row["address"] for row in rows if isinstance(row, dict) and row.get("address") != address
+                  and AGENT_HARNESS.get(row.get("agent")) == harness and row.get("cwd") in spellings)
+
+
 def reply_from_history(args):
     info = hc_json("get", args.session)
     argv = info.get("argv") or []
@@ -353,6 +378,11 @@ def reply_from_history(args):
     asked = addressed_to(args.file or default_log(), args.conversation, args.round) - {None}
     if asked and info.get("address") not in asked:
         raise ValueError(f"the log shows this request was sent to {', '.join(sorted(asked))}, not to {info.get('address')}")
+    # Histories are keyed by folder, so the binding holds only if no other terminal of this harness used the folder.
+    sharers = folder_sharers(harness, info.get("cwd", ""), info.get("address"))
+    if sharers:
+        raise ValueError(f"{', '.join(sharers)} also ran {harness} in this folder, so its history cannot be told apart "
+                         "from this terminal's; start each reviewer in its own folder, or read the screen with hc read")
     path, reason = find_session_file(harness, info.get("cwd", ""), info.get("created_ms", 0), info.get("finished_ms"), args.conversation)
     if not path:
         raise ValueError(reason)

@@ -109,9 +109,9 @@ def claude_project_dir(cwd):
 
 
 def mentions(path, conversation):
-    """Does this session file contain the conversation id (the brief we sent names it)?"""
+    """Does this session file contain the conversation id (the brief we sent names it)? Case does not matter."""
     try:
-        return conversation.encode() in path.read_bytes()
+        return conversation.lower().encode() in path.read_bytes().lower()
     except OSError:
         return False
 
@@ -184,10 +184,10 @@ def find_resume_id(harness, cwd, created_ms, conversation):
     except OSError:
         return None, "session store unreadable"
     matches = sorted(set(matches))
-    if len(matches) == 1:
+    if len(matches) == 1 and not unconfirmed:
         return matches[0], None
     if matches:
-        return None, "more than one session matches this conversation"
+        return None, "more than one session may match this conversation"
     return None, "a history names this conversation but cannot be tied to this terminal" if unconfirmed else "resume id not found"
 
 
@@ -218,6 +218,18 @@ def wait_until_ended(address, seconds=3.0, step=0.3):
         time.sleep(step)
 
 
+AGENT_HARNESS = {"claude": "claude", "claude-code": "claude", "codex": "codex"}
+
+
+def folder_sharers(harness, cwd, address):
+    """Other terminals (live or ended) of the same harness that ran in the same folder."""
+    spellings = {cwd, os.path.realpath(cwd)}
+    listing = hc_json("ls", "--all")
+    rows = listing.get("terminals", []) if isinstance(listing, dict) else []
+    return sorted(row["address"] for row in rows if isinstance(row, dict) and row.get("address") != address
+                  and AGENT_HARNESS.get(row.get("agent")) == harness and row.get("cwd") in spellings)
+
+
 def end_session(conversation, session, log_file):
     """End one session and, once it is confirmed finished, log how to resume it.
 
@@ -229,6 +241,8 @@ def end_session(conversation, session, log_file):
     command, problem = None, None
     if not harness:
         problem = "not a claude or codex session"
+    elif folder_sharers(harness, info.get("cwd", ""), session["address"]):
+        problem = "another terminal of this harness ran in the same folder, so its history cannot be told apart"
     else:
         resume_id, problem = find_resume_id(harness, info.get("cwd", ""), info.get("created_ms", 0), conversation)
         if resume_id:
