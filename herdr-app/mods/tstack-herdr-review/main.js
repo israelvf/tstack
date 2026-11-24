@@ -4,7 +4,7 @@ import { props, theme, home, readTextFile, exec, run, terminals, agents } from "
 
 const LIMIT_BYTES = "1000000";
 const LIMIT_MESSAGES = 400;
-const COLLAPSE_AT = 600;
+const SUMMARY_MAX = 160;
 const EMPTY_LOG = "No review messages yet. Use sol-loop or council to start a logged review.";
 const DEFAULT_LOG = () => `${home()}/.local/state/tstack-herdr/messages.jsonl`;
 const ROLES_PATH = () => `${home()}/.config/tstack-herdr/roles.json`;
@@ -191,6 +191,88 @@ function prettify(text, task) {
   }).join("");
 }
 
+// ---- Chat-style summaries ----------------------------------------------------
+
+function firstSentence(text) {
+  const clean = text.replace(/^\s*(?:Subject|Assunto):[^\n]*\n+/i, "").replace(/[`*#>]/g, "").replace(/(^|\s)_+|_+(?=\s|$)/g, "$1").replace(/\s+/g, " ").trim();
+  const cut = /^(.{20,}?[.!?])(\s|$)/.exec(clean);
+  const sentence = cut ? cut[1] : clean;
+  return sentence.length > SUMMARY_MAX ? `${sentence.slice(0, SUMMARY_MAX - 1).trimEnd()}…` : sentence;
+}
+
+const FINDING = /^\W*([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s*[—-]+\s*(Critical|High|Medium|Low|Info|Nit)\b\s*[—-]*\s*(.*)$/i;
+const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info", "nit"];
+const MAX_FINDING_LINES = 3;
+
+function shorten(text, max) {
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+// Findings look like "R1-01 — Medium — path:line" followed by their description.
+function findingsOf(text) {
+  const lines = text.split("\n");
+  const found = [];
+  for (let i = 0; i < lines.length; i++) {
+    const head = FINDING.exec(lines[i]);
+    if (!head) continue;
+    const body = [];
+    for (let j = i + 1; j < lines.length && lines[j].trim() && !FINDING.test(lines[j]); j++) body.push(lines[j]);
+    const label = /^\s*[-*]?\s*(?:Impact|Impacto|Problem|Problema|Issue|Summary|Resumo)\s*:\s*/i;
+    const prose = body.map((line) => line.replace(label, "")).join(" ");
+    const sentence = firstSentence(prose) || firstSentence(head[3]);
+    found.push({ level: head[2].toLowerCase(), text: sentence });
+  }
+  return found;
+}
+
+// Intent line of a request, e.g. "Intenção do usuário: …" or "Change under review: …".
+function intentOf(text) {
+  // Prefer the stated intent over a generic "request" line.
+  const labels = [
+    /^\W*(?:(?:Intent|Intention|Intenção)[^:]{0,30}|(?:Change under review|Mudança em revisão)(?:\s*\([^)]*\))?):\s*(.+)$/i,
+    /^\W*(?:Pedido|Request)[^:]{0,30}:\s*(.+)$/i,
+  ];
+  // Paragraphs are hard-wrapped, so unwrap each one before matching.
+  const paragraphs = text.split(/\n\s*\n/).map((paragraph) => paragraph.replace(/\s*\n\s*/g, " "));
+  for (const label of labels) {
+    for (const paragraph of paragraphs) {
+      const found = label.exec(paragraph);
+      if (found) return firstSentence(found[1]);
+    }
+  }
+  return "";
+}
+
+// The agent's own "summary" field wins. Older or summary-less messages get a rule-based one.
+function summarize(message) {
+  if (typeof message.summary === "string" && message.summary.trim()) return message.summary.trim();
+  const text = message.text.trim();
+  const verdict = /\b(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)\b/.exec(text.slice(0, 300));
+  if (verdict) {
+    if (verdict[1] === "APPROVE") return "Approved";
+    if (verdict[1] === "INCONCLUSIVE") return "Inconclusive";
+    const findings = findingsOf(text);
+    if (!findings.length) return "Changes requested";
+    const counts = new Map();
+    for (const finding of findings) counts.set(finding.level, (counts.get(finding.level) ?? 0) + 1);
+    const detail = SEVERITY_ORDER.filter((level) => counts.has(level))
+      .map((level) => `${counts.get(level)} ${level[0].toUpperCase()}${level.slice(1)}`).join(", ");
+    const top = [...findings].sort((a, b) => SEVERITY_ORDER.indexOf(a.level) - SEVERITY_ORDER.indexOf(b.level))
+      .slice(0, MAX_FINDING_LINES)
+      .map((finding) => `• ${finding.level[0].toUpperCase()}${finding.level.slice(1)} — ${shorten(finding.text, 110)}`);
+    const more = findings.length - top.length;
+    return [`Changes requested · ${findings.length} ${findings.length === 1 ? "finding" : "findings"}: ${detail}`,
+      ...top, ...(more > 0 ? [`+${more} more`] : [])].join("\n");
+  }
+  if (message.direction === "outgoing") {
+    const intent = intentOf(text);
+    const n = message.criteria.length;
+    const head = `Review requested · round ${message.round}${n ? ` · ${n} ${n === 1 ? "criterion" : "criteria"}` : ""}`;
+    return intent ? `${head}\n${intent}` : head;
+  }
+  return firstSentence(text);
+}
+
 // ---- Colors --------------------------------------------------------------------
 
 const HEX = /^#([0-9a-f]{6})$/i;
@@ -290,7 +372,7 @@ export default class TStackReviews extends View {
 
   taskRow(task, t) {
     const where = this.context.get(task.id);
-    const preview = task.last.text.replace(/\s+/g, " ").slice(0, 90);
+    const preview = summarize(task.last).split("\n")[0].slice(0, 90);
     return v_flex().w_full().gap(4).px(12).py(10).rounded(10).cursor_pointer()
       .bg(t.raised).border(1).border_color(t.border)
       .on_click((_event, cx) => { this.selected = task.id; cx.notify(); })
@@ -325,20 +407,20 @@ export default class TStackReviews extends View {
     const right = role === "implementer";
     const tick = receipt(task, message, this.deliveries, this.reads);
     const open = this.expanded.has(message.event_id);
-    const pretty = prettify(message.text, task);
-    const long = pretty.length > COLLAPSE_AT;
-    const body = long && !open ? `${pretty.slice(0, COLLAPSE_AT).trimEnd()}…` : pretty;
+    const summary = summarize(message);
     const tickColor = tick.state === "read" ? "#34b7f1" : tick.state === "blocked" ? "#ef4444" : t.dim;
     const openSource = () => run("terminal.peek", { terminal: message.source_session });
     const card = v_flex().max_w(760).min_w(0).gap(6).px(12).py(9).rounded(12)
       .bg(mix(accent, t.background, 0.22)).border(1).border_color(mix(accent, t.background, 0.55))
       .child(div().w_full().truncate().font_semibold().text_size(12).text_color(accent).child(displayName(message.sender)))
-      .child(TextView.markdown(`review-${message.event_id}`, body).selectable(true).on_link_click((url) => this.openLink(url)))
-      .when(long, (el) => el.child(div().text_size(11).text_color(t.accent).cursor_pointer()
+      .child(v_flex().w_full().gap(3).children(summary.split("\n").map((line) => div().w_full().text_size(13.5).text_color(t.foreground).child(line))))
+      .when(open, (el) => el.child(v_flex().w_full().gap(6).pt(6).mt(2).border_t(1).border_color(mix(accent, t.background, 0.4))
+        .child(TextView.markdown(`review-${message.event_id}`, prettify(message.text, task)).selectable(true).on_link_click((url) => this.openLink(url)))))
+      .child(div().text_size(11).text_color(t.accent).cursor_pointer()
         .on_click((_event, cx) => {
           if (open) this.expanded.delete(message.event_id); else this.expanded.add(message.event_id);
           cx.notify();
-        }).child(open ? "Show less" : "Show more")))
+        }).child(open ? "Hide details" : "Details"))
       .child(h_flex().w_full().gap(8).items_center().justify_end()
         .when(available, (el) => el.child(div().text_size(10.5).text_color(t.dim).cursor_pointer().on_click(openSource).child("Open session")))
         .child(div().text_size(10.5).text_color(t.dim).child(clock(message.created_at)))
@@ -388,4 +470,4 @@ export default class TStackReviews extends View {
   }
 }
 
-export { parseLog, tasks, receipt, prettify, dated };
+export { parseLog, tasks, receipt, prettify, dated, summarize };

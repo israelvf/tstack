@@ -21,7 +21,8 @@ MESSAGE_FIELDS = {
     "criteria", "evidence", "text", "created_at", "status",
 }
 # Optional message metadata for the panel: a human title and where the task started.
-OPTIONAL_MESSAGE_FIELDS = {"title", "space_id", "tab_id", "space_name", "tab_name", "group_message_id"}
+OPTIONAL_MESSAGE_FIELDS = {"title", "summary", "space_id", "tab_id", "space_name", "tab_name", "group_message_id"}
+SUMMARY_MAX = 500
 READ_FIELDS = {"event_id", "kind", "related_event_id", "conversation_id", "reader", "created_at"}
 DELIVERY_FIELDS = {
     "event_id", "kind", "related_event_id", "conversation_id", "round",
@@ -67,6 +68,8 @@ def validate(record):
     for field in OPTIONAL_MESSAGE_FIELDS & set(record):
         if not isinstance(record[field], str) or not record[field].strip():
             raise ValueError(f"{field} must be a non-empty string when present")
+    if "summary" in record and len(record["summary"]) > SUMMARY_MAX:
+        raise ValueError(f"summary must be at most {SUMMARY_MAX} characters")
     if "group_message_id" in record:
         try:
             uuid.UUID(record["group_message_id"])

@@ -295,6 +295,14 @@ the tab bar"), `space_id`, `tab_id`, `space_name` and `tab_name` (where the task
 started). Get the last four with `herdr-review-log context` (it uses
 `HC_TERMINAL_ID` and the labels Herdr writes; never invent values).
 
+Every `message` record should also carry a `summary`: one or two plain
+sentences (at most 500 characters) saying what the message does, written like a
+chat line in the language the user is using. For example "Asked Sol to review
+the tab bar fix, read-only" or "Approved; no findings". Do not paste the
+message, a verdict header or file paths. The panel shows the summary in the
+bubble and keeps the full text behind a "Details" action; without a summary it
+falls back to a rule-based one.
+
 When you receive and read a logged message, record a read receipt, once per
 message, and do not reply to it:
 

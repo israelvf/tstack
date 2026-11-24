@@ -74,6 +74,14 @@ class ReviewLogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "title"):
             validate(record)
 
+    def test_summary_is_short_and_optional(self):
+        record = message()
+        record["summary"] = "Asked Sol to review the tab bar fix."
+        validate(record)
+        record["summary"] = "x" * 501
+        with self.assertRaisesRegex(ValueError, "summary"):
+            validate(record)
+
     def test_read_receipt(self):
         read = {"event_id": str(uuid.uuid4()), "kind": "read", "related_event_id": str(uuid.uuid4()),
                 "conversation_id": str(uuid.uuid4()), "reader": "t2x", "created_at": "2026-11-13T12:00:02Z"}

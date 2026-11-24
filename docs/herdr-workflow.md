@@ -219,9 +219,10 @@ The logger is append-only and rejects a duplicate `event_id`.
 
 A `read` receipt means "read", not "approved".
 
-Optional `message` fields, each a non-empty string (put them on the first
-message of a task): `title`, `space_id`, `tab_id`, `space_name`, `tab_name`, and
-`group_message_id` (a UUID shared by the per-recipient copies of one broadcast).
+Optional `message` fields, each a non-empty string: `summary` (on every
+message) and, on the first message of a task, `title`, `space_id`, `tab_id`,
+`space_name` and `tab_name`. `group_message_id` (a UUID) is shared by the
+per-recipient copies of one broadcast.
 
 ## Reviews panel
 
@@ -237,9 +238,14 @@ at another file.
   `Subject:` line (`Assunto:` also works), otherwise the repository and a
   short commit SHA.
 - **Conversation.** Selecting a task opens its group chat: one bubble per
-  message in the author's color, round separators, long messages collapsed
-  behind "Show more", and an "Open session" action while the source session is
-  alive. Per-recipient copies sharing a `group_message_id` appear as one bubble.
+  message in the author's color, round separators, and an "Open session" action
+  while the source session is alive. Each bubble shows a short summary; the full
+  message sits behind "Details".
+- **Summaries.** The optional `summary` field (at most 500 characters, written
+  by the sending agent like a chat line) is shown as is. Messages without one
+  get a rule-based summary: for reviews, the verdict, a count by severity and the
+  top three findings (one line each); for requests, "Review requested", the
+  criteria count and the stated intent; otherwise the first sentence. Per-recipient copies sharing a `group_message_id` appear as one bubble.
 - **Readable text.** Commit SHAs and UUIDs are abbreviated, absolute snapshot
   paths are shortened, and the subject line is not repeated in the body.
   References such as `file.js:39` or `file.js:27-30` are links that open the
