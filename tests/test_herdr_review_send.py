@@ -336,8 +336,9 @@ class HistoryTests(unittest.TestCase):
             log = Path(temp) / "messages.jsonl"
             log.write_text(json.dumps({"kind": "message", "direction": "outgoing", "conversation_id": conv, "round": 1, "destination_session": "t4"}) + "\n")
             info = {"address": "t5", "argv": ["claude"], "state": "finished", "cwd": "/s", "created_ms": 0}
+            hc = lambda *x: {"terminals": []} if x[:1] == ("ls",) else info
             a = types.SimpleNamespace(session="t5", conversation=conv, round=1, file=log)
-            with mock.patch.object(send, "hc_json", lambda *x: info):
+            with mock.patch.object(send, "hc_json", hc):
                 with self.assertRaisesRegex(ValueError, "sent to t4, not to t5"):
                     send.reply_from_history(a)
                 a.round = 2                      # nothing was logged for round 2, so the log has no say
@@ -345,7 +346,7 @@ class HistoryTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "not found"):
                         send.reply_from_history(a)
             info["address"] = "t4"; a.round = 1  # the right session passes the log check
-            with mock.patch.object(send, "hc_json", lambda *x: info), mock.patch.object(send, "find_session_file", return_value=(Path("/x"), None)), \
+            with mock.patch.object(send, "hc_json", hc), mock.patch.object(send, "find_session_file", return_value=(Path("/x"), None)), \
                     mock.patch.object(send, "final_reply", return_value=("OK", None)):
                 self.assertEqual(send.reply_from_history(a), "OK")
 
@@ -400,6 +401,53 @@ class HistoryTests(unittest.TestCase):
                              {"address": "t6", "agent": "claude-code", "cwd": "/elsewhere", "state": "live"}):  # another folder
                 with mock.patch.object(send, "hc_json", hc([mine, harmless])):
                     self.assertEqual(send.reply_from_history(a), "OK")
+
+    def test_fences_follow_markdown(self):
+        conv = self.CONV
+        inner = f"Conversation: {conv}, round 1"
+        outer = f"Conversation: {conv}, round 2"
+        cases = {
+            "four backticks around three": f"````\n```\n{inner}\n```\n````\n\n{outer}\n",
+            "tilde fence": f"~~~python\n{inner}\n~~~\n\n{outer}\n",
+            "backtick fence containing tildes": f"```\n~~~\n{inner}\n~~~\n```\n\n{outer}\n",
+            "crlf line endings": f"```\r\n{inner}\r\n```\r\n\r\n{outer}\r\n",
+            "fence indented by three spaces": f"   ```\n{inner}\n   ```\n\n{outer}\n",
+        }
+        for name, text in cases.items():
+            self.assertEqual(send.header_rounds(text, conv), {2}, name)
+        # a shorter closing fence does not close a longer one, so the header below is still inside the code
+        self.assertEqual(send.header_rounds(f"````\n```\n{outer}\n", conv), set())
+        # four or more spaces make an indented code block in Markdown, not a header
+        self.assertEqual(send.header_rounds(f"    {inner}", conv), set())
+        self.assertEqual(send.header_rounds(f"   {inner}", conv), {1})
+        # a backtick fence's info string cannot hold a backtick, so this line opens nothing
+        self.assertEqual(send.header_rounds(f"``` `x`\n{outer}\n", conv), {2})
+
+    def test_with_header_closes_a_pending_fence_with_its_own_delimiter(self):
+        conv = self.CONV
+        for opening in ("```", "~~~python", "````", "~~~~", "   ```js"):
+            text = send.with_header(f"Intro\n{opening}\nsome code never closed", conv, 2)
+            self.assertEqual(send.header_rounds(text, conv), {2}, opening)
+        self.assertEqual(send.header_rounds(send.with_header("```\ncode\n~~~\n", conv, 3), conv), {3})  # ~~~ is content in a backtick fence
+
+    def test_folders_are_compared_by_real_path_on_both_sides(self):
+        with tempfile.TemporaryDirectory() as temp:
+            real = Path(temp) / "real"; real.mkdir()
+            alias = Path(temp) / "alias"; alias.symlink_to(real)
+            rows = [{"address": "t1", "agent": "codex", "cwd": str(real)}, {"address": "t2", "agent": "codex", "cwd": str(alias)}]
+            with mock.patch.object(send, "hc_json", lambda *x: {"terminals": rows}):
+                self.assertEqual(send.folder_sharers("codex", str(real), "t1"), ["t2"])
+                self.assertEqual(send.folder_sharers("codex", str(alias), "t2"), ["t1"])
+                self.assertEqual(send.folder_sharers("claude", str(real), "t1"), [])
+
+    def test_an_hc_ls_answer_that_cannot_be_read_is_refused_not_assumed_empty(self):
+        for bad in ({}, [], "x", {"terminals": None}, {"terminals": "x"}, {"terminals": [{"cwd": "/x", "agent": "codex"}]},
+                    {"terminals": ["t1"]}, {"terminals": [{"address": 7}]}):
+            with mock.patch.object(send, "hc_json", lambda *x, bad=bad: bad):
+                with self.assertRaisesRegex(ValueError, "cannot be checked"):
+                    send.folder_sharers("codex", "/x", "t1")
+        with mock.patch.object(send, "hc_json", lambda *x: {"terminals": [{"address": "t9", "agent": "codex"}]}):  # no cwd: cannot share
+            self.assertEqual(send.folder_sharers("codex", "/x", "t1"), [])
 
     def test_a_working_reviewer_and_a_non_agent_terminal_are_refused(self):
         a = types.SimpleNamespace(session="t1", conversation=self.CONV, round=1)

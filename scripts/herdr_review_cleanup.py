@@ -222,12 +222,26 @@ AGENT_HARNESS = {"claude": "claude", "claude-code": "claude", "codex": "codex"}
 
 
 def folder_sharers(harness, cwd, address):
-    """Other terminals (live or ended) of the same harness that ran in the same folder."""
-    spellings = {cwd, os.path.realpath(cwd)}
+    """Other terminals (live or ended) of the same harness that ran in the same folder.
+
+    Folders are compared by their real path on both sides, so a symlink to the same folder counts. An answer from
+    hc that cannot be read raises, because "nobody shares it" must never be assumed.
+    """
+    mine = {cwd, os.path.realpath(cwd)}
     listing = hc_json("ls", "--all")
-    rows = listing.get("terminals", []) if isinstance(listing, dict) else []
-    return sorted(row["address"] for row in rows if isinstance(row, dict) and row.get("address") != address
-                  and AGENT_HARNESS.get(row.get("agent")) == harness and row.get("cwd") in spellings)
+    rows = listing.get("terminals") if isinstance(listing, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("hc ls gave an unexpected answer, so the folder cannot be checked for other terminals")
+    sharers = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("address"), str):
+            raise ValueError("hc ls listed an entry without an address, so the folder cannot be checked for other terminals")
+        if row["address"] == address or AGENT_HARNESS.get(row.get("agent")) != harness:
+            continue
+        other = row.get("cwd")
+        if isinstance(other, str) and (other in mine or os.path.realpath(other) in mine):
+            sharers.append(row["address"])
+    return sorted(sharers)
 
 
 def end_session(conversation, session, log_file):
@@ -239,15 +253,21 @@ def end_session(conversation, session, log_file):
     argv = info.get("argv") or []
     harness = argv[0] if argv and argv[0] in READ_ONLY else None
     command, problem = None, None
+    sharers = []
     if not harness:
         problem = "not a claude or codex session"
-    elif folder_sharers(harness, info.get("cwd", ""), session["address"]):
-        problem = "another terminal of this harness ran in the same folder, so its history cannot be told apart"
     else:
-        resume_id, problem = find_resume_id(harness, info.get("cwd", ""), info.get("created_ms", 0), conversation)
-        if resume_id:
-            command = resume_argv(harness, argv, resume_id)
-            problem = None if command else "read-only mode not confirmed in the launch flags"
+        try:
+            sharers = folder_sharers(harness, info.get("cwd", ""), session["address"])
+        except ValueError as exc:  # the resume command is optional; ending the session is not
+            problem = str(exc)
+        if sharers:
+            problem = "another terminal of this harness ran in the same folder, so its history cannot be told apart"
+        elif problem is None:
+            resume_id, problem = find_resume_id(harness, info.get("cwd", ""), info.get("created_ms", 0), conversation)
+            if resume_id:
+                command = resume_argv(harness, argv, resume_id)
+                problem = None if command else "read-only mode not confirmed in the launch flags"
     subprocess.run(["hc", "kill", session["address"]], capture_output=True, check=False)
     if not wait_until_ended(session["address"]):
         return False, "hc kill did not end the session"

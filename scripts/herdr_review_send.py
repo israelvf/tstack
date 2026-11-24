@@ -150,8 +150,9 @@ def with_header(text, conversation, round_number):
     if rounds:
         raise ValueError(f"the brief already names round {sorted(rounds)} of this conversation, not round {round_number}")
     body = text.rstrip()
-    if len(re.findall(r"^[ \t]*(?:```|~~~)", body, re.MULTILINE)) % 2:  # an unclosed fence would swallow the header
-        body += "\n```"
+    _, fence = scan_fences(body)
+    if fence:  # an open fence would swallow the header: close it with its own delimiter
+        body += "\n" + fence[0] * fence[1]
     return f"{body}\n\nConversation: {conversation}, round {round_number}"
 
 
@@ -187,17 +188,37 @@ def send_messages(args, text):
 
 # The header every request carries, alone on its line. Mentions inside the body ("Previous request: Conversation:
 # ...") are not headers, so an old round named in a brief cannot be mistaken for the round being asked.
-HEADER = re.compile(r"^[ \t]*Conversation:[ \t]*([0-9a-fA-F-]{36}),[ \t]*round[ \t]*(\d+)[ \t]*$", re.MULTILINE)
+HEADER = re.compile(r"^ {0,3}Conversation:[ \t]*([0-9a-fA-F-]{36}),[ \t]*round[ \t]*(\d+)[ \t]*$", re.MULTILINE)
 SLACK_SECONDS = 5
 
 
-FENCE = re.compile(r"^[ \t]*(```|~~~).*?(?:^[ \t]*\1[ \t]*$|\Z)", re.MULTILINE | re.DOTALL)
+FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def scan_fences(text):
+    """(visible, open_fence): the text without fenced code blocks, and the fence still open at the end or None.
+
+    Follows Markdown: a fence is three or more backticks or tildes, indented by at most three spaces; it closes with
+    the same character, at least as long, on a line of its own; a backtick fence's info string has no backtick;
+    inside a fence everything is content, including other fence markers. Line endings may be CRLF.
+    """
+    visible, fence = [], None
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if fence:
+            if re.match(rf"^ {{0,3}}{re.escape(fence[0])}{{{fence[1]},}}[ \t]*$", line):
+                fence = None
+            continue
+        opened = FENCE_OPEN.match(line)
+        if opened and not (opened.group(1)[0] == "`" and "`" in opened.group(2)):
+            fence = (opened.group(1)[0], len(opened.group(1)))
+            continue
+        visible.append(line)
+    return "\n".join(visible), fence
 
 
 def without_code(text):
-    """The text without fenced code blocks (an unclosed fence runs to the end): an example header in a code
-    block is not a header."""
-    return FENCE.sub("", text)
+    """The text without fenced code blocks: an example header inside one is not a header."""
+    return scan_fences(text)[0]
 
 
 def header_rounds(text, conversation):
@@ -357,12 +378,26 @@ AGENT_HARNESS = {"claude": "claude", "claude-code": "claude", "codex": "codex"}
 
 
 def folder_sharers(harness, cwd, address):
-    """Other terminals (live or ended) of the same harness that ran in the same folder."""
-    spellings = {cwd, os.path.realpath(cwd)}
+    """Other terminals (live or ended) of the same harness that ran in the same folder.
+
+    Folders are compared by their real path on both sides, so a symlink to the same folder counts. An answer from
+    hc that cannot be read raises, because "nobody shares it" must never be assumed.
+    """
+    mine = {cwd, os.path.realpath(cwd)}
     listing = hc_json("ls", "--all")
-    rows = listing.get("terminals", []) if isinstance(listing, dict) else []
-    return sorted(row["address"] for row in rows if isinstance(row, dict) and row.get("address") != address
-                  and AGENT_HARNESS.get(row.get("agent")) == harness and row.get("cwd") in spellings)
+    rows = listing.get("terminals") if isinstance(listing, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("hc ls gave an unexpected answer, so the folder cannot be checked for other terminals")
+    sharers = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("address"), str):
+            raise ValueError("hc ls listed an entry without an address, so the folder cannot be checked for other terminals")
+        if row["address"] == address or AGENT_HARNESS.get(row.get("agent")) != harness:
+            continue
+        other = row.get("cwd")
+        if isinstance(other, str) and (other in mine or os.path.realpath(other) in mine):
+            sharers.append(row["address"])
+    return sorted(sharers)
 
 
 def reply_from_history(args):

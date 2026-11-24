@@ -189,5 +189,36 @@ class CleanupTests(unittest.TestCase):
         self.assertFalse(any("append" in str(call) for call in logged))
 
 
+    def test_cleanup_compares_folders_by_real_path_and_refuses_an_unreadable_listing(self):
+        from scripts import herdr_review_cleanup as cleanup
+        with tempfile.TemporaryDirectory() as temp:
+            real = Path(temp) / "real"; real.mkdir()
+            alias = Path(temp) / "alias"; alias.symlink_to(real)
+            rows = [{"address": "t1", "agent": "claude-code", "cwd": str(real)}, {"address": "t2", "agent": "claude", "cwd": str(alias)}]
+            with mock.patch.object(cleanup, "hc_json", lambda *x: {"terminals": rows}):
+                self.assertEqual(cleanup.folder_sharers("claude", str(real), "t1"), ["t2"])
+            for bad in ({}, [], {"terminals": None}, {"terminals": [{"cwd": "/x", "agent": "codex"}]}):
+                with mock.patch.object(cleanup, "hc_json", lambda *x, bad=bad: bad):
+                    with self.assertRaisesRegex(ValueError, "cannot be checked"):
+                        cleanup.folder_sharers("codex", "/x", "t1")
+
+
+    def test_an_unreadable_hc_listing_still_ends_the_session_but_records_no_resume_command(self):
+        from scripts import herdr_review_cleanup as cleanup
+        info = {"argv": ["codex", "--sandbox", "read-only"], "cwd": "/snap", "created_ms": 0}
+        calls = []
+        def hc(*args):
+            return {"unexpected": True} if args[0] == "ls" else {**info, "state": "finished"}
+        def run(cmd, **kwargs):
+            calls.append(cmd[:2])
+            return mock.Mock(returncode=0)
+        with mock.patch.object(cleanup, "hc_json", hc), mock.patch.object(cleanup.subprocess, "run", run):
+            ended, problem = end_session(str(uuid.uuid4()), {"address": "t1"}, Path("/tmp/none.jsonl"))
+        self.assertTrue(ended)
+        self.assertIn("cannot be checked", problem)
+        self.assertIn(["hc", "kill"], calls)
+        self.assertFalse(any(call[1:] == ["append"] for call in calls))
+
+
 if __name__ == "__main__":
     unittest.main()
