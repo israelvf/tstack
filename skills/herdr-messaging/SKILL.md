@@ -376,12 +376,17 @@ agent announced them; attribute the claim or verify the evidence.
 ## TStack review contract
 
 Use this contract when `sol-loop`, `council` or `full-stop` send a review. The
-transport remains `hc`; do not start an agent or use the T3 or legacy `herdr`
-TUI backends.
+default transport is `herdr-review-acp` (see "Reviewers over ACP"): the executor
+resolves, confirms and starts the reviewer itself, and the correlation, snapshot and
+record fields below are written by it with `--log`. The `hc` transport described in the
+rest of this contract applies to terminal reviewers, which are a fallback used only when
+the user asks for them. Never use the T3 or legacy `herdr` TUI backends.
 
 ### Selection and snapshot
 
-Resolve each address by project/repository, absolute worktree, role and
+For ACP reviewers, selection is the executor's job: `herdr-review-acp agents` shows who can
+start, and a reviewer whose read-only mode or model cannot be confirmed is `unavailable`.
+For terminal reviewers, resolve each address by project/repository, absolute worktree, role and
 confirmed model. `hc ls --json` is the index, `hc get <address> --json`
 confirms path/status and `hc read <address> --lines 0` confirms the current
 screen. Do not use a terminal name, an installed executable or a model catalogue
@@ -431,8 +436,8 @@ OpenCode session checks each finding and records `FIXED`, `DECLINED`, `OPEN` or
 `NOT_VERIFIED`, with its own evidence. A proven defect can block despite other
 favorable opinions.
 
-`sol-loop`: one reviewer at a time, a Codex GPT-6.1 Sol session. `council`: Sol and
-Claude Opus 5.5, no substitutions. Neither has a fixed number of rounds: they continue
+`sol-loop`: one reviewer at a time, Codex GPT-6.1 Sol. `council`: Sol, Claude Opus 5.5
+and Gemini 4 Neon Medium (Antigravity), no substitutions. Neither has a fixed number of rounds: they continue
 until the required reviewers approve the exact current head, or the user stops. Later
 rounds cover only the new diff and the open findings. Timeout, block, unavailability
 and a stale SHA have an explicit status and never count as approval. See the skills

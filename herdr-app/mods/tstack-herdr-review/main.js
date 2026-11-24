@@ -94,7 +94,7 @@ function profileOf(end, root) {
   const argv = end?.resume_argv;
   if (!Array.isArray(argv) || argv[0] !== "env") return null;
   const home = RESUME_HOME[argv[2]];
-  if (!home || argv.length < 4 || typeof end.conversation_id !== "string" || !/^[0-9a-f-]{36}$/i.test(end.conversation_id)) return false;
+  if (!home || argv.length < 4 || typeof end.conversation_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(end.conversation_id)) return false;
   const profile = `${root.replace(/\/$/, "")}/acp-profiles/${end.conversation_id}/${argv[2]}`;
   return argv[1] === `${home}=${profile}` ? profile : false;
 }

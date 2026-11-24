@@ -64,10 +64,16 @@ def check_snapshot_cwd(cwd):
 RESUME_HOME = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR"}
 
 
+# Same pattern as the panel, so both accept exactly the same conversation ids in a resume command.
+CANONICAL_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+
+
 def split_resume_env(argv, conversation):
     """(harness, argv without the env prefix). The prefix must be exactly the conversation's private profile."""
     if argv[:1] != ["env"]:
         return argv[0], argv
+    if not CANONICAL_UUID.fullmatch(conversation):
+        raise ValueError("resume_argv with env needs a conversation id in the canonical hyphenated form")
     if len(argv) < 4 or argv[2] not in RESUME_HOME:
         raise ValueError("resume_argv with env must be: env <NAME>=<private profile> codex|claude ...")
     harness = argv[2]

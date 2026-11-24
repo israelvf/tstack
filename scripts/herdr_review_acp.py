@@ -63,6 +63,14 @@ AGENTS = {
     "opencode": {"harness": "opencode", "short": "OpenCode", "label": "OpenCode", "mode": "plan", "config": {}},
 }
 SNAPSHOT_MARK = ".tstack-snapshot"
+# The one conversation id form the log validator and the panel both accept (it becomes part of folder names).
+CANONICAL_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def canonical_uuid(value):
+    if not isinstance(value, str) or not CANONICAL_UUID.fullmatch(value):
+        raise ValueError(f"conversation id must be a lowercase hyphenated UUID, got {value!r}")
+    return value
 SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 # Flags a resumed reviewer keeps, so it stays read-only (mirrors herdr_review_log.RESUME_FLAGS).
 CLAUDE_NO_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit", "Task", "Agent"]
@@ -541,6 +549,7 @@ def check_snapshot(snapshot):
 
 def run_review(agent, snapshot, brief, conversation, round_number, session_id=None, timeout=900, spec=None):
     spec = spec or AGENTS[agent]
+    canonical_uuid(conversation)
     started = time.time()
     result = {"agent": agent, "label": spec.get("label"), "conversation": conversation, "round": round_number,
               "status": "unavailable", "review": None, "session_id": session_id, "permissions": [], "tools": [],
@@ -636,7 +645,7 @@ def make_snapshot(repo, head, conversation):
     folder with new contents. Only a folder this function made (it carries a mark naming the conversation) is replaced."""
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise ValueError("head must be a full 40-character commit id")
-    uuid.UUID(conversation)
+    canonical_uuid(conversation)
     found = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", f"{head}^{{commit}}"], capture_output=True, text=True)
     if found.returncode != 0 or found.stdout.strip() != head:
         raise ValueError(f"{head} is not a commit of {repo}")
@@ -659,7 +668,16 @@ def make_snapshot(repo, head, conversation):
         make_writable(path)
         shutil.rmtree(path, ignore_errors=True)
         raise ValueError(f"could not export {head}: {unpack.stderr.decode(errors='replace')[:200]}")
-    (path / SNAPSHOT_MARK).write_text(conversation + "\n")
+    # The marker name is ours. A commit that ships an entry with that name (a symlink would make the write
+    # below land outside the snapshot) or any link that leaves the tree is refused, and the export removed.
+    escaping = [p for p in snapshot_problems(path) if p.startswith("symlink")]
+    if os.path.lexists(path / SNAPSHOT_MARK) or escaping:
+        make_writable(path)
+        shutil.rmtree(path, ignore_errors=True)
+        raise ValueError(f"{head} cannot be a snapshot: " + ("it contains an entry named " + SNAPSHOT_MARK if not escaping else escaping[0]))
+    handle = os.open(path / SNAPSHOT_MARK, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(handle, "w") as marker:
+        marker.write(conversation + "\n")
     make_read_only(path)
     return path
 
@@ -930,6 +948,7 @@ def run_check(agent, spec=None, timeout=240):
 
 def forget(agent, snapshot, session_id, conversation):
     spec = AGENTS[agent]
+    canonical_uuid(conversation)
     command, env, _ = launch_spec(agent, spec, conversation)
     client = Client(command, str(snapshot), env)
     try:
@@ -950,7 +969,7 @@ LOG_REQUIRED = ("repo", "base_sha", "head_sha", "title", "summary", "sender_name
 def cmd_review(args, spec=None):
     """One logged round. Returns (result, exit code). The session of an earlier round is continued automatically."""
     brief = Path(args.brief_file).read_text(encoding="utf-8")
-    uuid.UUID(args.conversation)
+    canonical_uuid(args.conversation)
     spec = spec or AGENTS[args.agent]
     logger = None
     if args.log:

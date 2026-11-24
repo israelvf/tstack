@@ -604,6 +604,48 @@ class SnapshotCommandTests(unittest.TestCase):
                 acp.check_snapshot(path)
                 acp.make_writable(path)
 
+    def commit_with(self, repo, name, target):
+        (repo / name).symlink_to(target)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", f"add {name}")
+        return git(repo, "rev-parse", "HEAD")
+
+    def test_a_commit_that_ships_the_marker_name_as_a_link_never_writes_through_it(self):  # F1
+        with tempfile.TemporaryDirectory() as temp:
+            repo, conversation = make_repo(temp), str(uuid.uuid4())
+            root = Path(temp) / "root"
+            root.mkdir()
+            victim = root / "victim.txt"
+            victim.write_text("DO NOT TOUCH")
+            head = self.commit_with(repo, acp.SNAPSHOT_MARK, "../victim.txt")
+            with Env(root):
+                with self.assertRaisesRegex(ValueError, acp.SNAPSHOT_MARK):
+                    acp.make_snapshot(repo, head, conversation)
+                self.assertEqual(victim.read_text(), "DO NOT TOUCH")
+                self.assertFalse((root / f"tstack-review-{conversation[:8]}").exists())
+
+    def test_a_commit_with_a_link_that_leaves_the_tree_is_not_exported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo, conversation = make_repo(temp), str(uuid.uuid4())
+            head = self.commit_with(repo, "escape", "/etc")
+            with Env(Path(temp) / "root"):
+                with self.assertRaisesRegex(ValueError, "symlink leaves the snapshot"):
+                    acp.make_snapshot(repo, head, conversation)
+                self.assertFalse((acp.review_root() / f"tstack-review-{conversation[:8]}").exists())
+
+    def test_conversation_ids_must_be_canonical_everywhere_they_become_a_path(self):  # F2
+        lower = str(uuid.uuid4())
+        for bad in (lower.replace("-", ""), lower.upper(), "{" + lower + "}", "urn:uuid:" + lower, "../" + lower, "probe"):
+            with self.assertRaises(ValueError, msg=bad):
+                acp.canonical_uuid(bad)
+            with tempfile.TemporaryDirectory() as temp, Env(Path(temp) / "root"):
+                repo = make_repo(temp)
+                with self.assertRaises(ValueError, msg=bad):
+                    acp.make_snapshot(repo, git(repo, "rev-parse", "HEAD"), bad)
+                with self.assertRaises(ValueError, msg=bad):
+                    acp.run_review("fake", temp, "brief", bad, 1, spec=fake_spec())
+        self.assertEqual(acp.canonical_uuid(lower), lower)
+
     def test_it_refuses_bad_heads_and_folders_it_did_not_make(self):
         with tempfile.TemporaryDirectory() as temp:
             repo, conversation = make_repo(temp), str(uuid.uuid4())
