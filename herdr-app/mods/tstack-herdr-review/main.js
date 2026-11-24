@@ -655,11 +655,13 @@ export default class TStackReviews extends View {
 
   // ---- Task list -------------------------------------------------------------
 
-  taskRow(task, t) {
+  // `separated` draws the bottom border; the last task of a day has none, since the date divider follows.
+  taskRow(task, t, separated = true) {
     const where = this.context.get(task.id);
     const preview = summarize(task.last).split("\n")[0].slice(0, 110);
     const shown = task.agents.slice(0, 4), more = task.agents.length - shown.length;
-    return v_flex().w_full().gap(5).px(14).py(11).cursor_pointer().border_b(1).border_color(t.border)
+    return v_flex().w_full().gap(5).px(14).py(11).cursor_pointer()
+      .when(separated, (el) => el.border_b(1).border_color(t.border))
       .hover((el) => el.bg(t.raised))
       .on_click((_event, cx) => { this.selected = task.id; cx.notify(); })
       .child(h_flex().w_full().gap(10).items_start()
@@ -676,14 +678,20 @@ export default class TStackReviews extends View {
   }
 
   listView(t) {
-    const list = tasks(this.messages);
+    const entries = dated(tasks(this.messages));
+    const rows = entries.flatMap((entry, index) => {
+      if (entry.day) {
+        // Full width, like the borders between tasks; the date sits in the middle.
+        return [h_flex().w_full().items_center().pt(14).pb(6)
+          .child(div().flex_1().h(1).bg(t.border))
+          .child(div().px(10).text_size(10.5).text_color(t.dim).child(entry.day))
+          .child(div().flex_1().h(1).bg(t.border))];
+      }
+      const next = entries[index + 1];
+      return [this.taskRow(entry.task, t, Boolean(next && !next.day))];
+    });
     return v_flex().flex_1().min_h(0).min_w(0).overflow_y_scroll()
-      .when(list.length > 0, (el) => el.children(dated(list).flatMap((entry) => entry.day
-        ? [h_flex().w_full().gap(8).items_center().px(14).pt(14).pb(6)
-            .child(div().flex_1().h(1).bg(t.border))
-            .child(div().text_size(10.5).text_color(t.dim).child(entry.day))
-            .child(div().flex_1().h(1).bg(t.border))]
-        : [this.taskRow(entry.task, t)])))
+      .when(rows.length > 0, (el) => el.children(rows))
       .when(Boolean(this.status), (el) => el.child(div().w_full().px(14).py(14).text_size(13).text_color(t.muted).child(this.status)));
   }
 

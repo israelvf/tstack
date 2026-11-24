@@ -366,7 +366,8 @@ recent messages and refreshes every 3 seconds. Pass a `logPath` prop to point it
 at another file.
 
 - **Task list.** One entry per `conversation_id`, newest first, split by a
-  divider line per day (`dd/mm/yy`), with no card borders. Each entry shows the
+  divider line per day (`dd/mm/yy`) that spans the full width, with no card borders; a thin
+  line separates the tasks of one day, and none sits just above a date. Each entry shows the
   title (up to two lines), the latest message's summary, a badge per participant
   (its initials, in its color), a status chip and where the task started. The status
   reads the latest round: `Awaiting reply`, `Awaiting 1 of 2`, `Changes requested`,
