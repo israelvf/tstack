@@ -255,30 +255,42 @@ function dated(list) {
   return out;
 }
 
-// Within one task no two participants share a default color: a hash cannot guarantee that for any pair
-// of models, so a clash is resolved by turning the later participant's hue until it is free.
+// Within one task no two participants share a default color. A hash cannot keep every pair of models apart,
+// so a clash is resolved by searching for a color that is really free. Known models reserve their exact color
+// first; the others take the first free variation of theirs (hue turns, then lighter, then darker), and a final
+// search over all colors makes the guarantee unconditional.
 function distinctColors(agents) {
   const used = new Set();
-  for (const agent of agents) {
-    let color = defaultColor(agent), tries = 0;
-    while (used.has(color) && tries++ < 24) {
-      const [h, sat, l] = hexToHsl(color);
-      color = hslToHex((h + 14) % 360, sat, l);
+  const free = (base) => {
+    if (!used.has(base)) return base;
+    const [h, sat, l] = hexToHsl(base);
+    for (let k = 1; k <= 75; k++) {
+      const light = [0, 0.1, -0.1][Math.floor(k / 26) % 3];
+      const color = hslToHex((h + 14 * k) % 360, sat, Math.min(0.75, Math.max(0.3, l + light)));
+      if (!used.has(color)) return color;
     }
-    used.add(color);
-    agent.autoColor = color;
+    for (let n = parseInt(base.slice(1), 16) + 1; ; n = (n + 1) % 0x1000000) {
+      const color = `#${n.toString(16).padStart(6, "0")}`;
+      if (!used.has(color)) return color;
+    }
+  };
+  const known = agents.filter((agent) => KNOWN_COLORS[agent.modelKey]);
+  const others = agents.filter((agent) => !KNOWN_COLORS[agent.modelKey]);
+  for (const agent of [...known, ...others]) {
+    agent.autoColor = free(defaultColor(agent));
+    used.add(agent.autoColor);
   }
 }
 
 // ---- Review status ---------------------------------------------------------------
 
-const VERDICT_LINE = /^(?:(?:verdict|veredito)\s*[:—–-]\s*)?(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)(?![A-Za-z])(?:[\s.!:]*|\s*[—–-]\s.*)$/i;
+const VERDICT_LINE = /^(?:(?:verdict|veredito)\s*[:—–-]\s*)?_*(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)_*(?![A-Za-z])(?:[\s.!:]*|\s*[—–-]\s.*)$/i;
 
 // The verdict is an explicit line near the top, after any Summary line; mentioning the word is not a verdict.
-// Markdown emphasis (**Verdict:** APPROVE, __APPROVE__, > quotes) is removed before the line is checked.
+// Markdown emphasis (**Verdict:** APPROVE, __Verdict:__ APPROVE, _APPROVE_, > quotes) is removed before the line is checked.
 function verdictOf(text) {
   const lines = String(text).replace(SUMMARY_LINE, "").split("\n").slice(0, 12)
-    .map((line) => line.replace(/[*`#>]/g, "").replace(/^[\s_-]+|[\s_-]+$/g, "")).filter(Boolean).slice(0, 6);
+    .map((line) => line.replace(/[*`#>]|__/g, "").replace(/^[\s_-]+|[\s_-]+$/g, "")).filter(Boolean).slice(0, 6);
   for (const line of lines) {
     const found = VERDICT_LINE.exec(line);
     if (found) return found[1].toUpperCase();
