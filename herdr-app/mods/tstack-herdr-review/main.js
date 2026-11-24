@@ -78,7 +78,7 @@ function humanize(slug) {
 function taskTitle(messages) {
   for (const message of messages) if (typeof message.title === "string" && message.title.trim()) return message.title.trim();
   for (const message of messages) {
-    const found = /^Assunto:\s*(.+?)(?:\s+reply-to:.*)?$/im.exec(message.text);
+    const found = /^(?:Subject|Assunto):\s*(.+?)(?:\s+reply-to:.*)?$/im.exec(message.text);
     if (found) return humanize(found[1]);
   }
   const first = messages[0];
@@ -171,7 +171,7 @@ function fileLink(task, ref, line, end) {
 }
 
 function prettify(text, task) {
-  const body = text.replace(/^\s*Assunto:[^\n]*\n+/i, ""); // the title is already in the header
+  const body = text.replace(/^\s*(?:Subject|Assunto):[^\n]*\n+/i, ""); // the title is already in the header
   return body.split(FENCE).map((part, index) => {
     if (index % 2) return part; // fenced code stays as written
     let out = part

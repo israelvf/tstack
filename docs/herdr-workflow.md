@@ -1,235 +1,268 @@
-# TStack no Herdr
+# TStack on Herdr
 
-Este fork adapta `sol-loop`, `council` e `full-stop` para as sessões existentes
-do Herdr Core (`hc`). O OpenCode implementa; revisores são sessões separadas e
-somente leitura. O app desktop é `herdr-app`; a TUI `herdr` é outro backend.
+This fork adapts `sol-loop`, `council` and `full-stop` to run on top of
+Herdr sessions instead of T3 Code. One agent implements,
+and independent reviewer agents audit the change in separate, read-only
+sessions. Every message is recorded in a private local log and shown in a
+**Reviews** side panel that reads like a group chat.
 
-## Instalação neste host
+Herdr has two front ends that do not share state: the desktop app
+(`herdr-app`) and the legacy TUI (`herdr`). Everything here targets the desktop
+app and its terminal backend, the Herdr Core CLI (`hc`).
 
-Os diretórios abaixo foram confirmados no host Linux em 13/11/2026:
+## How it works
 
-| Harness | Diretório de skills |
-| --- | --- |
-| Codex | `/home/israelvf/.codex/skills` |
-| Claude Code | `/home/israelvf/.claude/skills` |
-| OpenCode | `/home/israelvf/.config/opencode/skills` |
-| Antigravity CLI (`agy`) | `/home/israelvf/.gemini/antigravity/skills` |
-
-Copie as pastas `sol-loop`, `council`, `full-stop`, `herdr-messaging`,
-`file-pr`, `babysit-pr` e `leaving-pr-comments` para o diretório do harness
-que vai usá-las. Não sobrescreva arquivos existentes sem revisar diferenças.
-As skills de review do fork não ficam instaladas automaticamente pelo clone.
-Neste host, `herdr-messaging` nos quatro harnesses aponta para a mesma pasta
-Codex; copiar a versão atualizada do fork para lá atualiza os quatro.
-
-As instalações locais deste host usam esses quatro diretórios. A pasta global
-de skills do Antigravity CLI está presente, embora o `agy` não exponha um
-comando de listagem de skills nesta versão. O fluxo Herdr inicia o CLI
-diretamente, então não presume a descoberta automática da skill pelo `agy`.
-
-## Modelos e papéis
-
-`~/.config/tstack-herdr/roles.json` é configuração pessoal, fora do Git. Os
-catálogos locais OpenCode, Codex e `agy` confirmaram os respectivos modelos em
-13/11/2026; Claude Opus 5.5 permanece configurado pelo nome solicitado, sem
-afirmar que exista uma sessão TStack ativa:
-
-```json
-{
-  "implementer": {
-    "harness": "opencode",
-    "primary_model": "opencode/gpt-6-luna",
-    "comparison_model": "opencode/deepseek-v4.1-flash"
-  },
-  "reviewers": {
-    "sol": { "harness": "codex", "model": "gpt-6.1-sol" },
-    "opus": { "harness": "claude-code", "model": "claude-opus-5-5" }
-  }
-}
+```
+implementer ──hc send──▶ reviewer A ─┐
+ (writes code)           reviewer B ─┼─▶ findings ──▶ implementer fixes, replies
+                                     │
+        every message ──▶ messages.jsonl ──▶ Reviews panel
 ```
 
-GPT-6 Luna é a opção principal. DeepSeek V4.1 Flash fica configurado apenas
-para uma comparação futura; não o selecione automaticamente. Catálogo confirma
-que um modelo existe, mas não que uma sessão Herdr o esteja usando.
+- **Implementer:** the session that owns the editable worktree. By default an
+  OpenCode session.
+- **Reviewers:** separate sessions that only read an immutable snapshot of the
+  change (a worktree detached at the exact head commit). They never edit,
+  commit, push or start other agents.
+- **Transport:** `hc send` delivers each message. The skills never read a
+  reviewer's raw terminal as a source of conversation; they log only the clean
+  final message.
 
-Para resolver revisores, use `hc ls --json`; confira `where`, cwd/worktree,
-projeto/assunto, papel, argv e estado com `hc get <endereço> --json`; confirme
-modelo e prontidão com `hc read <endereço> --lines 0`. CWD sozinho não prova que
-um harness está ausente: avalie a tarefa e o modelo, sem ler histórico de outros
-projetos. Reutilize uma sessão livre somente se modelo, snapshot e acesso
-somente leitura forem confirmados.
+## Requirements
 
-Uma invocação explícita de `council` ou `sol-loop` autoriza abrir sessões
-dedicadas quando as existentes estiverem ausentes, ocupadas ou inadequadas.
-Use o `hc run --bg` e os modos read-only nativos documentados em
-`skills/herdr-messaging/SKILL.md`; não altere permissões de sessões existentes,
-não use flags de bypass e não inicie uma CLI em modo print. Confira a sessão e
-o modelo efetivo depois do launch; um diálogo de login/permissão não pode ser
-contornado. Em retomadas, procure labels/nome da conversa antes de abrir
-duplicatas.
+- Herdr desktop app and `hc` on `PATH`.
+- At least one agent harness for the roles you want to use (Claude Code, Codex,
+  OpenCode or Antigravity CLI), authenticated normally.
+- `git`, `python3` (for the message logger) and an authenticated
+  [GitHub CLI](https://cli.github.com) (`gh`) for the PR skills.
 
-O conselho usa, sem substituição:
+## Install
 
-1. Codex — GPT-6.1 Sol.
-2. Claude Code — Claude Opus 5.5.
+### Skills
 
-O Antigravity fica fora do conselho padrão. No teste interativo, o modo
-`plan` apresentou “Approve plan” e ficou bloqueado antes do parecer final.
-
-O primeiro parecer de cada membro usa a mesma base, head, critérios e evidências
-e não recebe os pareceres dos outros. Cada resposta final aparece em Reviews
-assim que chega. Ao fechar a rodada, o coordenador encaminha os pareceres aos
-outros revisores como contexto do grupo. Os revisores são somente leitura. O
-OpenCode tem a worktree de edição. `council` admite duas rodadas por padrão; a
-segunda revisa apenas o diff novo e achados abertos. `sol-loop` usa um revisor
-por vez e tem três rodadas por padrão. Timeout, indisponibilidade, bloqueio ou
-SHA antigo não contam como aprovação. Um defeito comprovado bloqueia mesmo se
-os demais aprovarem.
-
-## Usar
-
-- Peça `sol-loop` explicitamente para a revisão por Sol.
-- Peça `council` explicitamente quando precisar de pareceres independentes de
-  Sol e Opus.
-- Invoque **`/full-stop` explicitamente** para preparar uma mudança, prová-la,
-  revisar, abrir/acompanhar uma PR e parar antes do merge. Uma frase de
-  encerramento “full stop” não aciona a skill. `full-stop` não chama
-  `full-send`, não ativa auto-merge e nunca faz merge.
-
-Um contrato de review é uma mensagem limpa com `conversation_id`, `round`,
-remetente/destinatário e sessões, repositório/worktree, `base_sha`, `head_sha`,
-critérios, evidências e a tarefa autorizada. Use SHAs completos e uma revisão
-imutável. Cada finding inclui ID, severidade, arquivo/linha, impacto,
-reprodução/evidência e ação mínima. O implementador registra
-`FIXED`/`DECLINED`/`OPEN`/`NOT_VERIFIED`, justifica e roda checks depois das
-correções.
-
-O envio é feito por `hc send`. Guarde os recibos reais (`started`, `status`,
-`turn`) e não reenvie quando a entrega for incerta: inspecione a mesma sessão.
-Uma resposta tardia ou um parecer em outro SHA tem status explícito e não é
-aprovação da versão atual.
-
-`full-stop` faz prova direta antes da PR, usa `sol-loop`, `file-pr`,
-`babysit-pr` e `leaving-pr-comments`, acompanha CI e reviews da PR real quando
-invocado, e deixa o merge para Israel. Só um watcher acompanha cada PR.
-
-## Registro e painel GPUI
-
-`herdr-app/mods/tstack-herdr-review` é o mod nativo JavaScript/GPUI. A fonte de
-mensagens é o registro JSONL criado pela skill, por padrão em
-`~/.local/state/tstack-herdr/messages.jsonl`. Configurações e registros reais
-ficam fora do clone. O logger cria diretório `0700`, arquivo `0600`, rejeita
-caminho dentro de qualquer repositório Git e não permite campos de chamadas ou
-saídas de ferramentas. As respostas registradas são somente o parecer final
-limpo, não a tela bruta do terminal.
-
-`hc events` contém fatos de estado/turno e não é fonte de conteúdo de conversa.
-O mod não presume que esses eventos carreguem mensagens: lê apenas o JSONL
-local. Ele lê no máximo o último MiB e usa até 400 mensagens recentes.
-
-O painel (título **Reviews**) funciona como um chat em grupo:
-
-- **Lista de tasks:** uma task é uma `conversation_id`. A lista vem da mais
-  recente para a mais antiga, com uma linha separadora por dia (`dd/mm/aa`),
-  título legível, prévia da última mensagem, bolinhas coloridas dos
-  participantes, rodada e número de mensagens.
-- **Título:** campo opcional `title` da primeira mensagem; sem ele, usa o
-  assunto (`Assunto:`) da primeira mensagem ou repositório e SHA curto.
-- **Conversa:** um balão por mensagem, com a cor do agente, separadores de
-  rodada, mensagens longas recolhidas ("Show more") e o botão "Open session"
-  quando a sessão de origem está viva. Envios de grupo usam um mesmo
-  `group_message_id` e viram um único balão.
-- **Texto legível:** SHAs de 40 caracteres e UUIDs aparecem abreviados, caminhos
-  absolutos do snapshot viram nomes curtos, e a linha `Assunto:` não se repete
-  no corpo. Referências como `arquivo.js:39` são links que abrem o arquivo numa
-  aba (`zed-file`); o diff não é aberto, porque os snapshots não têm `.git`.
-- **Space e aba:** a task mostra onde nasceu (`space_name › tab_name`) e o link
-  "go to tab" seleciona essa aba. Usa `space_id`/`tab_id` do log quando existem
-  e, se não existirem, o contexto da sessão de origem enquanto ela está viva.
-- **Checks:** ✓ enviado; ✓✓ cinza entregue (registro `delivery` com `sent`);
-  ✓✓ azul lido; `!` entrega bloqueada. "Lido" vem de um registro `kind=read`
-  ou, na falta dele, de o destinatário ter postado depois na mesma task. O
-  recibo de leitura só indica leitura, não aprovação.
-
-As cores ficam em `~/.config/tstack-herdr/roles.json`, sob `colors`. Chaves:
-`implementer`, `sol`, `opus`, `gemini` e `other`; os valores são `#rrggbb`.
-Chaves ausentes usam o padrão do mod.
-
-```json
-{ "colors": { "implementer": "#2563eb", "sol": "#10a37f", "opus": "#d97757" } }
-```
-
-O painel lateral é composto por `herdr-app/layouts/github-and-trunk-reviews.json`,
-o mod `herdr-app/mods/tabs-with-reviews` (botão Reviews e restauração por
-espaço) e `herdr-app/mods/tstack-herdr-review` (mensagens). O layout referencia
-ícones nativos de Files, Changes, Chat e pane; somente os quatro SVGs de botões
-de janela do Windows pertencem ao mod de abas. O preview usa o SVG do layout
-nativo `github-and-trunk`.
-
-Para instalar/atualizar esses arquivos, confira diferenças antes de substituir
-versões pessoais. Isso não altera o layout selecionado; a troca para o layout
-personalizado é uma ação explícita separada:
+Copy the skills into the skills directory of every harness that should use
+them:
 
 ```sh
-mkdir -p ~/.config/herdr-app/layouts
-cp herdr-app/layouts/github-and-trunk-reviews.json ~/.config/herdr-app/layouts/
-mkdir -p ~/.config/herdr-app/mods/tabs-with-reviews
-cp -R herdr-app/mods/tabs-with-reviews/. ~/.config/herdr-app/mods/tabs-with-reviews/
-mkdir -p ~/.config/herdr-app/mods/tstack-herdr-review
-cp -R herdr-app/mods/tstack-herdr-review/. ~/.config/herdr-app/mods/tstack-herdr-review/
-herdr-app check ~/.config/herdr-app/mods/tabs-with-reviews
-herdr-app check ~/.config/herdr-app/mods/tstack-herdr-review
+SKILLS="sol-loop council full-stop herdr-messaging file-pr babysit-pr leaving-pr-comments"
+for skill in $SKILLS; do
+  cp -R skills/$skill <harness-skills-dir>/
+done
 ```
 
-Depois de validar, escolha o layout manualmente com `herdr-app do layout.switch
---name github-and-trunk-reviews`. Não substitua o `main`, o `github-and-trunk`
-original ou outros layouts padrão. No clone deste workflow, o layout ativo já
-permanece intacto; os arquivos de configuração pessoais não fazem parte do
-commit.
+Typical locations are `~/.claude/skills`, `~/.codex/skills`,
+`~/.config/opencode/skills` and `~/.gemini/antigravity/skills`. Compare with
+existing files before overwriting, because skills you already customised would
+be replaced. `herdr-messaging` can live in one shared folder that the other
+harnesses link to.
 
-Instale o logger se ainda não existir em `~/.local/bin` (ou atualize-o após
-revisar diferenças):
+### Message logger
 
 ```sh
 install -D -m 755 scripts/herdr_review_log.py ~/.local/bin/herdr-review-log
 ```
 
-As preferências pessoais ficam em `~/.config/tstack-herdr/roles.json` com
-permissão `0600`; o diretório usa `0700`. O conteúdo não é commitado.
+### Reviews panel
 
-Cada mensagem é um registro `kind=message`; cada recibo é um registro
-`kind=delivery` com um novo `event_id`, `related_event_id` e apenas os campos
-`started`, `status` e `turn` que o `hc` retornou. O restante dos metadados de
-conversa e snapshot é repetido para manter correlação. Não armazene a saída
-bruta do terminal.
-
-Campos opcionais de `kind=message`, todos strings não vazias: `title`,
-`space_id`, `tab_id`, `space_name`, `tab_name` e `group_message_id` (UUID).
-Coloque-os na primeira mensagem da task. `herdr-review-log context` imprime o
-space e a aba da sessão atual a partir dos rótulos do Herdr. Um registro
-`kind=read` (`event_id`, `related_event_id`, `conversation_id`, `reader`,
-`created_at`) marca que uma sessão leu uma mensagem:
+The panel is a native Herdr mod. A second mod adds a **Reviews** button to the
+tab bar and remembers which side panel each space had open. A layout that
+embeds both is included.
 
 ```sh
-herdr-review-log context
-herdr-review-log read --conversation <uuid> --event <event_id da mensagem lida>
+APP_HOME=~/.config/herdr-app
+mkdir -p "$APP_HOME/mods/tstack-herdr-review" "$APP_HOME/mods/tabs-with-reviews" "$APP_HOME/layouts"
+cp -R herdr-app/mods/tstack-herdr-review/. "$APP_HOME/mods/tstack-herdr-review/"
+cp -R herdr-app/mods/tabs-with-reviews/.   "$APP_HOME/mods/tabs-with-reviews/"
+cp herdr-app/layouts/github-and-trunk-reviews.json "$APP_HOME/layouts/"
+herdr-app check "$APP_HOME/mods/tstack-herdr-review"
+herdr-app check "$APP_HOME/mods/tabs-with-reviews"
 ```
 
-Herdr recarrega os mods quando seus arquivos mudam. Se não usar o layout
-integrado, o painel ainda pode ser aberto sem alterar o layout pessoal em uma
-aba nativa (`herdr-app commands` lista os argumentos da versão instalada):
+`HERDR_APP_HOME` overrides the default home directory. Installing does not
+change your active layout. To switch to the bundled one:
 
 ```sh
-herdr-app do tab.new --name "TStack reviews" --mod tstack-herdr-review
+herdr-app do layout.switch --name github-and-trunk-reviews
 ```
 
-Ao fechar a aba, a sessão e o registro permanecem. A atualização consiste em
-copiar novamente os arquivos do diretório do mod acima e rodar `herdr-app
-check`.
+The layout is derived from Herdr's `github-and-trunk` layout and references
+other mods by name (`spaces`, `agents`, `files`, `changes`, `gh-inbox`, …). If
+the layout fails to load, install the missing mod or edit the layout.
 
-## Piloto adiado
+If you prefer not to change layouts, open the panel in a normal tab instead.
+Closing the tab leaves the log untouched:
 
-Roteiro reservado para depois: uma correção pequena no OpenCode, revisão pelo
-Codex GPT-6.1 Sol em outra sessão do Herdr, verificação dos achados pelo
-OpenCode e checks finais. Esta implementação não executou esse ciclo, não
-disparou um council real, não criou PR piloto e não comparou Luna com DeepSeek.
+```sh
+herdr-app do tab.new --name Reviews --mod tstack-herdr-review
+```
+
+Herdr reloads a mod when its files change, so updating is just copying the
+files again and re-running `herdr-app check`.
+
+## Configuration
+
+Personal settings live in `~/.config/tstack-herdr/roles.json`. Keep it outside
+any Git repository; it is yours, not part of this project.
+
+```json
+{
+  "implementer": {
+    "harness": "opencode",
+    "primary_model": "opencode/gpt-6-luna"
+  },
+  "reviewers": {
+    "sol":  { "harness": "codex",       "model": "gpt-6.1-sol" },
+    "opus": { "harness": "claude-code", "model": "claude-opus-5-5" }
+  },
+  "colors": {
+    "implementer": "#2563eb",
+    "sol": "#10a37f",
+    "opus": "#d97757"
+  }
+}
+```
+
+- `implementer` and `reviewers` record which harness and model fill each role.
+  A model listed in a harness catalogue only proves it exists. The skills
+  still confirm the model a running session actually uses before sending.
+- `colors` sets the Reviews bubble color per agent as `#rrggbb`. Keys are
+  `implementer`, `sol`, `opus`, `gemini` and `other`. Missing keys use the
+  built-in defaults.
+
+## Workflows
+
+| Skill | Reviewers | Rounds |
+| --- | --- | --- |
+| `sol-loop` | Codex, one at a time | 3 by default |
+| `council` | Codex (GPT-6.1 Sol) and Claude Code (Claude Opus 5.5), independent | 2 by default |
+| `full-stop` | Uses `sol-loop`, then files and watches a PR | n/a |
+
+Invoke each one explicitly. A closing phrase such as "full stop" does not
+trigger `full-stop`.
+
+- **Independence.** In round 1 every council member receives the same base,
+  head, criteria and evidence, and none sees the others' reviews. Each final
+  review appears in Reviews as soon as it arrives. When the round closes, the
+  coordinator forwards the reviews to the other members as group context.
+- **Later rounds** cover only the new diff and the findings still open.
+- **No substitutions.** If a member is missing, blocked, timed out or reviewed
+  a stale commit, that is reported with an explicit status. It never counts as
+  approval, and a partial council is labelled partial. A proven defect blocks
+  the change even if the other reviewers approve.
+- **Antigravity** is not in the default council: its interactive plan mode can
+  stop at an "Approve plan" prompt instead of returning a review.
+- **`full-stop`** proves the change, reviews it, files a PR with `file-pr`,
+  watches CI and reviews with `babysit-pr`, and stops before merging. It never
+  calls `full-send`, never enables auto-merge and never merges.
+
+### Finding and selecting sessions
+
+Reviewer sessions are resolved with `hc`, never guessed from a name or the
+executable:
+
+```sh
+hc ls --json                      # index of sessions
+hc get <address> --json           # cwd, labels, state
+hc read <address> --lines 0       # current screen: model, readiness
+```
+
+A session is reused only if it is free, runs the exact model, can read the
+snapshot and is effectively read-only. Otherwise an explicit `council` or
+`sol-loop` invocation authorises starting a dedicated interactive session in
+the harness's native read-only mode, named and labelled after the conversation
+so a resumed run finds it instead of creating a duplicate. The launch commands
+are in `skills/herdr-messaging/SKILL.md`. Nothing relaxes permissions on
+existing sessions, uses bypass flags or runs a one-shot print mode.
+
+## Review contract
+
+A review request is a clean message carrying: `conversation_id`, `round`,
+sender and recipient (with their `hc` sessions), repository and worktree,
+`base_sha` and `head_sha` (full 40-character IDs of an immutable revision),
+acceptance criteria, evidence and the authorised task.
+
+Reviewers answer `APPROVE`, `CHANGES_REQUESTED` or `INCONCLUSIVE`. Each finding
+has a stable ID, severity, `file:line`, impact, a concrete failure scenario,
+reproduction or evidence, and the smallest suggested action. The implementer
+checks every finding and records `FIXED`, `DECLINED`, `OPEN` or `NOT_VERIFIED`
+with its own evidence, then re-runs checks after fixes.
+
+Delivery is `hc send`. Keep the receipt `hc` returns (`started`, `status`,
+`turn`). If delivery is uncertain, inspect the same session before resending:
+the text may already have arrived.
+
+## Message log
+
+Before sending, the skills append the exact outgoing message to a JSONL log
+(`$XDG_STATE_HOME/tstack-herdr/messages.jsonl`, default
+`~/.local/state/tstack-herdr/messages.jsonl`) and later append the reviewer's
+final reply. The logger creates the directory with mode `0700` and the file
+with `0600`, refuses a path inside a Git repository and rejects unknown fields,
+so tool calls and raw terminal output cannot be stored.
+
+```sh
+herdr-review-log append   < message.json   # one record per call
+herdr-review-log validate                  # check the whole log
+herdr-review-log context                   # space/tab of the current session
+herdr-review-log read --conversation <uuid> --event <event_id>
+```
+
+The logger is append-only and rejects a duplicate `event_id`.
+
+### Records
+
+| `kind` | Purpose | Notes |
+| --- | --- | --- |
+| `message` | One message in a conversation | `direction` is `outgoing` or `incoming`; carries the snapshot fields from the review contract and the clean `text` |
+| `delivery` | Receipt for a sent message | Links by `related_event_id`; keeps only `started`, `status` and `turn` from `hc`; statuses: `sent`, `uncertain`, `timeout`, `unavailable`, `blocked`, `stale_sha`, `error` |
+| `read` | A session read a message | `related_event_id`, `conversation_id`, `reader` (the reader's `hc` session) |
+
+A `read` receipt means "read", not "approved".
+
+Optional `message` fields, each a non-empty string (put them on the first
+message of a task): `title`, `space_id`, `tab_id`, `space_name`, `tab_name`, and
+`group_message_id` (a UUID shared by the per-recipient copies of one broadcast).
+
+## Reviews panel
+
+The panel reads only this log. It reads the last 1 MB, uses up to the 400 most
+recent messages and refreshes every 3 seconds. Pass a `logPath` prop to point it
+at another file.
+
+- **Task list.** One entry per `conversation_id`, newest first, split by a
+  divider line per day (`dd/mm/yy`). Each entry shows a title, a preview of the
+  latest message, colored dots for the participants, the round and the message
+  count.
+- **Title.** The `title` field if present, otherwise the first message's
+  `Subject:` line (`Assunto:` also works), otherwise the repository and a
+  short commit SHA.
+- **Conversation.** Selecting a task opens its group chat: one bubble per
+  message in the author's color, round separators, long messages collapsed
+  behind "Show more", and an "Open session" action while the source session is
+  alive. Per-recipient copies sharing a `group_message_id` appear as one bubble.
+- **Readable text.** Commit SHAs and UUIDs are abbreviated, absolute snapshot
+  paths are shortened, and the subject line is not repeated in the body.
+  References such as `file.js:39` or `file.js:27-30` are links that open the
+  file in a Herdr tab. Diffs are not opened, because review snapshots have no
+  `.git` directory.
+- **Space and tab.** A task shows where it started (`space › tab`) with a
+  "go to tab" link. It uses `space_id`/`tab_id` from the log, or else the origin
+  session's location while that session is alive.
+- **Receipts.** `✓` sent, gray `✓✓` delivered (a `delivery` record with
+  `sent`), blue `✓✓` read, red `!` delivery blocked. "Read" comes from a `read`
+  record or, failing that, from the recipient having posted later in the task.
+
+## Troubleshooting
+
+- **Empty panel:** check that the log exists and that skills are logging. The
+  panel shows a message when the file is missing or unreadable.
+- **`herdr-app check` fails:** fix what it reports and run it again.
+- **Layout does not load:** it references other mods by name; make sure each
+  one is installed (`herdr-app status` shows errors).
+- **Uncertain delivery:** read the target with `hc read` before resending.
+
+## Status
+
+The workflow has been used for real reviews, but there is no automated
+end-to-end test: the tests cover the logger. Model comparisons are not part of
+the workflow.
