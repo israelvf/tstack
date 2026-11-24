@@ -24,9 +24,10 @@ implementer ──hc send──▶ reviewer A ─┐
 - **Reviewers:** separate sessions that only read an immutable snapshot of the
   change (a worktree detached at the exact head commit). They never edit,
   commit, push or start other agents.
-- **Transport:** `hc send` delivers each message. The skills never read a
-  reviewer's raw terminal as a source of conversation; they log only the clean
-  final message.
+- **Transport:** `hc send` delivers each request to a reviewer. A read-only
+  reviewer answers on screen, and the coordinator collects only its clean final
+  message with `hc read`. Raw terminal output, tool calls and intermediate text
+  are never logged as conversation.
 
 ## Requirements
 
