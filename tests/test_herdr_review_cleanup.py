@@ -5,8 +5,10 @@ import unittest
 import uuid
 from pathlib import Path
 
+from unittest import mock
+
 from scripts.herdr_review_cleanup import (claude_project_dir, classify_snapshots, delete_snapshot,
-                                          resume_argv, snapshot_candidates)
+                                          find_resume_id, resume_argv, snapshot_candidates)
 
 
 class CleanupTests(unittest.TestCase):
@@ -59,6 +61,30 @@ class CleanupTests(unittest.TestCase):
 
     def test_claude_project_dir_encoding(self):
         self.assertEqual(claude_project_dir("/a/b.c/d").name, "-a-b-c-d")
+        self.assertEqual(claude_project_dir("/a/13 - x_y/d").name, "-a-13---x-y-d")
+
+    def test_resume_id_is_matched_by_conversation_not_by_recency(self):
+        mine, other = str(uuid.uuid4()), str(uuid.uuid4())
+        cwd = "/review/snap"
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            project = claude_project_dir(cwd)
+            project.mkdir(parents=True)
+            (project / "mine.jsonl").write_text(f"Conversation: {mine}")
+            (project / "newer-other.jsonl").write_text(f"Conversation: {other}")
+            self.assertEqual(find_resume_id("claude", cwd, 0, mine), ("mine", None))
+            self.assertEqual(find_resume_id("claude", cwd, 0, str(uuid.uuid4()))[0], None)
+            (project / "second.jsonl").write_text(f"Conversation: {mine}")
+            self.assertIn("more than one", find_resume_id("claude", cwd, 0, mine)[1])
+
+    def test_codex_resume_id_needs_matching_cwd_and_conversation(self):
+        conv = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            day = Path(home) / ".codex" / "sessions" / "2026" / "11" / "24"
+            day.mkdir(parents=True)
+            meta = lambda cwd, sid: json.dumps({"payload": {"cwd": cwd, "id": sid}}) + f"\nConversation: {conv}"
+            (day / "rollout-a.jsonl").write_text(meta("/review/snap", "id-mine"))
+            (day / "rollout-b.jsonl").write_text(meta("/review/other", "id-elsewhere"))
+            self.assertEqual(find_resume_id("codex", "/review/snap", 0, conv), ("id-mine", None))
 
 
 if __name__ == "__main__":

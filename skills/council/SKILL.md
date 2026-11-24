@@ -117,7 +117,7 @@ Re-run applicable checks after corrections before reporting.
 ## Outcome
 
 After `APPROVED`, end the dedicated reviewer sessions with
-`herdr-review-cleanup sessions --approved`, then ask the user whether to delete
+`herdr-review-cleanup sessions --conversation <uuid> --approved`, then ask the user whether to delete
 the snapshots, saying that doing so prevents resuming those sessions later; see
 "Cleanup" in `herdr-messaging`. Keep everything after any other outcome and ask.
 

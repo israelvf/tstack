@@ -72,6 +72,49 @@ function conversationMessages(messages) {
   return [...bubbles.values()];
 }
 
+// ---- Safe resume commands ----------------------------------------------------
+// Mirrors validate_resume_argv() in scripts/herdr_review_log.py. The panel reads the raw log, so it
+// must not trust a session_end record: only a read-only resume of a snapshot folder may run.
+
+const RESUME_FLAGS = {
+  claude: { "--permission-mode": "one", "--model": "one", "--disallowedTools": "many", "--resume": "one" },
+  codex: { "--no-daemon": "zero", "--model": "one", "--sandbox": "one", "--ask-for-approval": "one" },
+};
+
+function parseFlags(tokens, allowed) {
+  const found = new Map();
+  let index = 0;
+  while (index < tokens.length) {
+    const flag = tokens[index++];
+    if (!Object.hasOwn(allowed, flag) || found.has(flag)) return null;
+    const arity = allowed[flag], values = [];
+    if (arity === "one") values.push(...tokens.slice(index, index + 1)), index += 1;
+    else if (arity === "many") while (index < tokens.length && !String(tokens[index]).startsWith("--")) values.push(tokens[index++]);
+    if ((arity === "one" && values.length !== 1) || (arity === "many" && !values.length)
+      || values.some((value) => String(value).startsWith("--"))) return null;
+    found.set(flag, values);
+  }
+  return found;
+}
+
+function safeResume(end, root) {
+  const argv = end?.resume_argv;
+  if (!Array.isArray(argv) || argv.some((item) => typeof item !== "string" || !item)) return false;
+  if (typeof end.cwd !== "string" || end.cwd.slice(0, end.cwd.lastIndexOf("/")) !== root.replace(/\/$/, "")) return false;
+  let id, flags;
+  if (argv[0] === "codex") {
+    if (argv.length < 3 || argv[1] !== "resume") return false;
+    id = argv[2]; flags = parseFlags(argv.slice(3), RESUME_FLAGS.codex);
+    if (!flags || flags.get("--sandbox")?.join() !== "read-only") return false;
+    if (flags.has("--ask-for-approval") && flags.get("--ask-for-approval").join() !== "never") return false;
+  } else if (argv[0] === "claude") {
+    if (argv.length < 3 || argv[argv.length - 2] !== "--resume") return false;
+    id = argv[argv.length - 1]; flags = parseFlags(argv.slice(1), RESUME_FLAGS.claude);
+    if (!flags || flags.get("--permission-mode")?.join() !== "plan") return false;
+  } else return false;
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id);
+}
+
 // ---- Task (conversation) model -------------------------------------------------
 
 function humanize(slug) {
@@ -287,6 +330,8 @@ function summarize(message) {
 
 // ---- Colors --------------------------------------------------------------------
 
+const REVIEW_ROOT = () => `${home()}/.cache/tstack-review`;
+
 const HEX = /^#([0-9a-f]{6})$/i;
 function mix(color, base, amount) {
   const a = HEX.exec(color), b = HEX.exec(base ?? "");
@@ -301,6 +346,7 @@ export default class TStackReviews extends View {
     this.messages = [];
     this.deliveries = new Map();
     this.reads = new Map();
+    this.reviewRoot = props()?.reviewRoot || REVIEW_ROOT();
     this.ends = new Map(); // conversation:session -> session_end record
     this.resumable = new Set(); // keys of ended sessions whose snapshot folder still exists
     this.colors = { ...DEFAULT_COLORS };
@@ -357,7 +403,7 @@ export default class TStackReviews extends View {
       const resumable = new Set();
       for (const [key, end] of parsed.ends) {
         const there = await exec("test", ["-d", end.cwd], { timeout: 3000 }).catch(() => ({ code: 1 }));
-        if (there.code === 0) resumable.add(key);
+        if (there.code === 0 && safeResume(end, this.reviewRoot)) resumable.add(key);
       }
       this.resumable = resumable;
       await this.loadColors();
@@ -373,7 +419,7 @@ export default class TStackReviews extends View {
 
   // Reopen an ended reviewer in its original snapshot, with the read-only flags it was launched with.
   resume(end) {
-    if (!["claude", "codex"].includes(end.resume_argv[0])) return;
+    if (!safeResume(end, this.reviewRoot)) return;
     run("tab.new", { name: "Reviewer (resumed)", folder: end.cwd, argv: end.resume_argv });
   }
 
@@ -489,7 +535,7 @@ export default class TStackReviews extends View {
 
   render() {
     const t = theme();
-    const live = new Set(terminals().map((terminal) => terminal.address));
+    const live = new Set(terminals().filter((terminal) => (terminal.state ?? "live") === "live").map((terminal) => terminal.address));
     const task = this.selected ? tasks(this.messages).find((item) => item.id === this.selected) : null;
     return v_flex().id("tstack-herdr-review").size_full().min_w(0).min_h(0).bg(t.background).text_color(t.foreground)
       .child(h_flex().w_full().px(16).py(12).gap(12).items_center().border_b(1).border_color(t.border)
@@ -500,4 +546,4 @@ export default class TStackReviews extends View {
   }
 }
 
-export { parseLog, tasks, receipt, prettify, dated, summarize };
+export { parseLog, tasks, receipt, prettify, dated, summarize, safeResume };

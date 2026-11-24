@@ -36,6 +36,59 @@ DELIVERY_FIELDS = {
 DELIVERY_STATES = {"sent", "uncertain", "timeout", "unavailable", "blocked", "stale_sha", "error"}
 
 
+def review_root():
+    return Path(os.environ.get("TSTACK_REVIEW_ROOT", Path.home() / ".cache" / "tstack-review"))
+
+
+# flag -> arity ("zero", "one", or "many" until the next flag). Anything else is rejected.
+RESUME_FLAGS = {
+    "claude": {"--permission-mode": "one", "--model": "one", "--disallowedTools": "many", "--resume": "one"},
+    "codex": {"--no-daemon": "zero", "--model": "one", "--sandbox": "one", "--ask-for-approval": "one"},
+}
+
+
+def parse_flags(tokens, allowed):
+    """Group tokens into {flag: [values]} using an allowlist; reject unknown, duplicate or stray tokens."""
+    found, index = {}, 0
+    while index < len(tokens):
+        flag = tokens[index]
+        if flag not in allowed or flag in found:
+            raise ValueError(f"resume_argv has an unsupported or repeated option: {flag}")
+        index += 1
+        arity = allowed[flag]
+        values = []
+        if arity == "one":
+            values, index = tokens[index:index + 1], index + 1
+        elif arity == "many":
+            while index < len(tokens) and not tokens[index].startswith("--"):
+                values.append(tokens[index])
+                index += 1
+        if (arity == "one" and len(values) != 1) or (arity == "many" and not values) or any(v.startswith("--") for v in values):
+            raise ValueError(f"resume_argv option {flag} is missing its value")
+        found[flag] = values
+    return found
+
+
+def validate_resume_argv(harness, argv):
+    """One strict definition of a safe resume command: read-only flags kept, nothing that relaxes them."""
+    if harness == "codex":
+        if len(argv) < 3 or argv[1] != "resume":
+            raise ValueError("a codex resume_argv must be: codex resume <id> <read-only flags>")
+        resume_id, flags = argv[2], parse_flags(argv[3:], RESUME_FLAGS["codex"])
+        if flags.get("--sandbox") != ["read-only"]:
+            raise ValueError("resume_argv must keep --sandbox read-only")
+        if flags.get("--ask-for-approval", ["never"]) != ["never"]:
+            raise ValueError("resume_argv may only use --ask-for-approval never")
+    else:
+        if len(argv) < 3 or argv[-2] != "--resume":
+            raise ValueError("a claude resume_argv must end with --resume <id>")
+        resume_id, flags = argv[-1], parse_flags(argv[1:], RESUME_FLAGS["claude"])
+        if flags.get("--permission-mode") != ["plan"]:
+            raise ValueError("resume_argv must keep --permission-mode plan")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", resume_id):
+        raise ValueError("resume_argv has an invalid session id")
+
+
 def default_path():
     state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
     return state / "tstack-herdr" / "messages.jsonl"
@@ -72,6 +125,9 @@ def validate(record):
             raise ValueError("resume_argv must be a non-empty list of strings")
         if record["harness"] not in {"claude", "codex"} or argv[0] != record["harness"]:
             raise ValueError("resume_argv must start with the claude or codex harness")
+        validate_resume_argv(record["harness"], argv)
+        if Path(record["cwd"]).parent != review_root():
+            raise ValueError(f"cwd must be a folder directly under the review root {review_root()}")
         return
     if kind == "read":
         try:

@@ -57,11 +57,14 @@ existing files before overwriting, because skills you already customised would
 be replaced. `herdr-messaging` can live in one shared folder that the other
 harnesses link to.
 
-### Message logger
+### Message logger and cleanup
 
 ```sh
 install -D -m 755 scripts/herdr_review_log.py ~/.local/bin/herdr-review-log
+install -D -m 755 scripts/herdr_review_cleanup.py ~/.local/bin/herdr-review-cleanup
 ```
+
+Install both: `herdr-review-cleanup` records resume commands through the logger.
 
 ### Reviews panel
 
