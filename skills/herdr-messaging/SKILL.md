@@ -93,9 +93,10 @@ A read-only reviewer must never need a permission dialog to do its job.
   reviewer never touches the log. Replying with `hc send` stays valid for peers
   that are not read-only reviewers.
 - **The reviewer writes its own summary.** In the request, ask the reviewer to
-  open its final message with one line, `Summary: <one or two chat-style
-  sentences, at most 500 characters, in the language the user uses>`, followed
-  by the verdict and findings as usual. The coordinator copies that line
+  open its final message with one line, `Summary: <one or two sentences, at most
+  500 characters, in the language the user uses, written as a short message to the
+  coordinator: first person, speaking to them>`, followed by the verdict and
+  findings as usual. The coordinator copies that line
   verbatim into the record's `summary` field and removes it from `text`. The
   coordinator never writes or rewrites a reviewer's summary; if the line is
   missing, log the reply without `summary` and let the panel's rule-based
@@ -129,7 +130,7 @@ recipient its own `group_message_id`, which splits one brief into several bubble
 herdr-review-send send --conversation <uuid> --round 1 --text-file brief.txt \
   --repo owner/repo --worktree /path/to/snapshot --base-sha <40-hex> --head-sha <40-hex> \
   --criteria "..." --evidence "..." --sender-name "Claude Code Claude Sonnet 5.5" \
-  --sender-model claude-sonnet-5-5 --summary "<chat-style summary>" --title "<task title>" \
+  --sender-model claude-sonnet-5-5 --summary "<one or two sentences addressed to the recipients>" --title "<task title>" \
   --to "label=Codex GPT-6.1 Sol,model=gpt-6.1-sol,target=<hc address or name>" \
   --to "label=Claude Code Claude Opus 5.5,model=claude-opus-5-5,target=<hc address or name>"
 
@@ -397,10 +398,13 @@ started). Get the last four with `herdr-review-log context` (it uses
 
 Every `message` record should also carry a `summary` (for a reviewer's reply,
 the reviewer writes it; see "Reply channel, permissions and trust"): one or two plain
-sentences (at most 500 characters) saying what the message does, written like a
-chat line in the language the user is using. For example "Asked Sol to review
-the tab bar fix, read-only" or "Approved; no findings". Do not paste the
-message, a verdict header or file paths. The panel shows the summary in the
+sentences (at most 500 characters) in the language the user is using, written as a
+short message addressed to the recipients, in the first person, as if speaking to
+them. Say "I'd like you to review the tab bar fix, read-only" (in Portuguese:
+"Gostaria que vocês fizessem uma revisão da correção da barra de abas") or "I found
+two problems in your patch", not a description from outside such as "Requested a
+review of the tab bar fix" or "Changes requested". Do not paste the message, a
+verdict header or file paths. The panel shows the summary in the
 bubble and keeps the full text behind a "Details" action; without a summary it
 falls back to a rule-based one.
 

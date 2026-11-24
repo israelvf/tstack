@@ -9,15 +9,6 @@ const EMPTY_LOG = "No review messages yet. Use sol-loop or council to start a lo
 const DEFAULT_LOG = () => `${home()}/.local/state/tstack-herdr/messages.jsonl`;
 const ROLES_PATH = () => `${home()}/.config/tstack-herdr/roles.json`;
 
-// Override any of these in roles.json under "colors": { "sol": "#10a37f", ... }.
-const DEFAULT_COLORS = {
-  implementer: "#2563eb",
-  sol: "#10a37f",
-  opus: "#d97757",
-  gemini: "#8b5cf6",
-  other: "#64748b",
-};
-
 function parseLog(raw) {
   const messages = [], deliveries = new Map(), reads = new Map(), ends = new Map();
   for (const line of String(raw ?? "").split("\n")) {
@@ -47,13 +38,11 @@ function parseLog(raw) {
   return { messages: messages.slice(-LIMIT_MESSAGES), deliveries, reads, ends };
 }
 
-const stamp = (value) => {
-  const date = new Date(value);
-  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString();
-};
+// Always 24-hour, whatever the system locale says.
 const clock = (value) => {
   const date = new Date(value);
-  return Number.isNaN(date.valueOf()) ? "" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return Number.isNaN(date.valueOf()) ? ""
+    : `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 };
 
 function conversationMessages(messages) {
@@ -140,13 +129,86 @@ function displayName(sender) {
   return sender.replace(/\s*[(/]\s*t\w+\)?\s*$/i, "").trim() || sender;
 }
 
-function roleOf(message) {
-  const text = `${message.sender} ${message.sender_model ?? ""}`.toLowerCase();
-  if (/sol\b/.test(text)) return "sol";
-  if (/opus|claude/.test(text)) return "opus";
-  if (/gemini|antigravity/.test(text)) return "gemini";
-  if (/implementer|opencode|luna/.test(text)) return "implementer";
-  return "other";
+// ---- Agent identity: which harness and model wrote a message --------------------
+// Identity is harness + model, never a guess from substrings of the sender label.
+
+const HARNESSES = [
+  [/claude/i, "Claude Code"], [/codex/i, "Codex"], [/opencode/i, "OpenCode"], [/antigravity|\bagy\b/i, "Antigravity"],
+];
+const WORD_CASE = { gpt: "GPT", deepseek: "DeepSeek", opencode: "OpenCode" };
+const EFFORT = new Set(["low", "medium", "high", "xhigh", "max"]);
+const slug = (text) => String(text ?? "").toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-|-$/g, "");
+
+// The harness that appears first in the text, so "OpenCode (Claude Sonnet)" is OpenCode.
+function harnessOf(text) {
+  let best = null;
+  for (const [pattern, name] of HARNESSES) {
+    const found = pattern.exec(text ?? "");
+    if (found && (!best || found.index < best.index)) best = { name, index: found.index };
+  }
+  return best?.name ?? null;
+}
+
+// "claude-opus-5-5" -> "Claude Opus 5.5", "gpt-6.1-sol" -> "GPT-6.1 Sol", "gemini-4-argon-high" -> "Gemini 4 Argon".
+function normalizeModel(raw) {
+  if (!raw) return "";
+  const tokens = String(raw).trim().replace(/^[^/\s]+\//, "").split(/[\s_-]+/).filter(Boolean);
+  while (tokens.length > 1 && EFFORT.has(tokens[tokens.length - 1].toLowerCase())) tokens.pop();
+  const merged = [];
+  for (const token of tokens) {
+    const last = merged[merged.length - 1];
+    if (/^\d+$/.test(token) && last && /^\d+$/.test(last)) merged[merged.length - 1] = `${last}.${token}`;
+    else merged.push(token);
+  }
+  let out = "";
+  merged.forEach((token, index) => {
+    const word = WORD_CASE[token.toLowerCase()] ?? (/^[\dv]\d/.test(token) || /^\d/.test(token) ? token : token[0].toUpperCase() + token.slice(1));
+    const glue = index === 0 ? "" : (merged[index - 1].toLowerCase() === "gpt" && /^\d/.test(token) ? "-" : " ");
+    out += glue + word;
+  });
+  return out;
+}
+
+// Older records only carry the model inside the label ("Codex GPT-6.1 Sol / t4h").
+function modelFromLabel(label, harness) {
+  let rest = displayName(label);
+  for (const [pattern] of HARNESSES) rest = rest.replace(new RegExp(`^(?:${pattern.source})(?:\\s+code|\\s+cli)?\\s*`, "i"), "");
+  return rest.replace(/\b(implementer|reviewer)\b/gi, "").trim();
+}
+
+function identityFrom(label, modelRaw) {
+  const clean = displayName(label ?? "");
+  const harness = harnessOf(clean) ?? harnessOf(modelRaw);
+  const model = normalizeModel(modelRaw || modelFromLabel(clean, harness));
+  return { key: slug(model || harness || clean) || "agent", harness, model, name: model || harness || clean || "Agent",
+    full: [harness, modelRaw || model].filter(Boolean).join(" · ") };
+}
+
+const identityOf = (message) => identityFrom(message.sender, message.sender_model);
+
+function initials(name) {
+  const words = String(name).split(/[\s-]+/).filter((word) => /^[A-Za-z]/.test(word));
+  return (words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? "?")[0]).toUpperCase();
+}
+
+const PALETTE = ["#2563eb", "#10a37f", "#d97757", "#8b5cf6", "#d4a72c", "#14b8a6", "#e11d48", "#64748b"];
+const DEFAULT_BY_MODEL = [[/\bsol\b/, "#10a37f"], [/opus/, "#d97757"], [/sonnet/, "#d4a72c"], [/haiku/, "#14b8a6"],
+  [/gemini|argon/, "#8b5cf6"], [/luna|opencode/, "#2563eb"]];
+
+// A stable color for any agent: a known model's color, else one picked from the key.
+function defaultColor(identity) {
+  for (const [pattern, color] of DEFAULT_BY_MODEL) if (pattern.test(identity.key)) return color;
+  let hash = 0;
+  for (const char of identity.key) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return PALETTE[hash % PALETTE.length];
+}
+
+// Text on a colored badge: dark on light colors, light on dark ones.
+function readable(hex) {
+  const found = /^#([0-9a-f]{6})$/i.exec(hex ?? "");
+  if (!found) return "#ffffff";
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(found[1].slice(i, i + 2), 16));
+  return 0.299 * r + 0.587 * g + 0.114 * b > 160 ? "#111111" : "#ffffff";
 }
 
 function dated(list) {
@@ -162,6 +224,35 @@ function dated(list) {
   return out;
 }
 
+// ---- Review status ---------------------------------------------------------------
+
+function verdictOf(text) {
+  // A leading "Summary:" line can be long; the verdict is looked for after it.
+  const body = String(text).replace(SUMMARY_LINE, "");
+  const found = /\b(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)\b/.exec(body.slice(0, 300));
+  return found ? found[1] : null;
+}
+
+// Where the latest round stands: who has not answered yet, or the combined verdict.
+function statusOf(items) {
+  const round = Math.max(...items.map((m) => m.round));
+  const asked = new Set(), answered = new Map();
+  for (const message of items.filter((m) => m.round === round)) {
+    if (message.direction === "outgoing") for (const copy of message.copies) asked.add(copy.destination_session);
+    else answered.set(message.source_session, verdictOf(message.text));
+  }
+  const reviewers = asked.size ? asked : new Set(answered.keys());
+  if (!reviewers.size) return { label: "", tone: "none" };
+  const waiting = [...reviewers].filter((session) => !answered.has(session)).length;
+  if (waiting) return { label: answered.size ? `Awaiting ${waiting} of ${reviewers.size}` : (waiting === 1 ? "Awaiting reply" : `Awaiting ${waiting} replies`), tone: "waiting" };
+  const verdicts = [...answered.values()];
+  if (verdicts.includes("CHANGES_REQUESTED")) return { label: "Changes requested", tone: "changes" };
+  if (verdicts.every((verdict) => verdict === "APPROVE")) return { label: "Approved", tone: "approved" };
+  return { label: "Inconclusive", tone: "neutral" };
+}
+
+const TONES = { approved: "#34b36b", changes: "#e0a23a", waiting: "#5b8def", neutral: "#9aa0a6" };
+
 function tasks(messages) {
   const byConversation = new Map();
   for (const message of conversationMessages(messages)) {
@@ -172,11 +263,16 @@ function tasks(messages) {
   for (const [id, items] of byConversation) {
     items.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
     const first = items[0], last = items[items.length - 1];
-    const roles = [...new Set(items.map(roleOf))];
+    const agents = [];
+    const addAgent = (identity) => { if (!agents.some((known) => known.key === identity.key)) agents.push(identity); };
+    for (const message of items) {
+      addAgent(identityOf(message));
+      if (message.direction === "outgoing") for (const copy of message.copies) addAgent(identityFrom(copy.recipient, copy.recipient_model));
+    }
     const sessions = [...new Set(items.flatMap((m) => [m.source_session, ...m.copies.map((c) => c.destination_session)]).filter(Boolean))];
     list.push({
       id, title: taskTitle(items), repo: first.repo, worktree: first.worktree, head: last.head_sha,
-      rounds: Math.max(...items.map((m) => m.round)), messages: items, last, roles, sessions,
+      rounds: Math.max(...items.map((m) => m.round)), messages: items, last, agents, sessions, status: statusOf(items),
       originSession: first.direction === "outgoing" ? first.source_session : (first.copies[0]?.destination_session ?? first.source_session),
     });
   }
@@ -352,7 +448,8 @@ export default class TStackReviews extends View {
     this.reviewRoot = props()?.reviewRoot || REVIEW_ROOT();
     this.ends = new Map(); // conversation:session -> session_end record
     this.resumable = new Set(); // keys of ended sessions whose snapshot folder still exists
-    this.colors = { ...DEFAULT_COLORS };
+    this.colors = {};
+    this.agents = {};
     this.context = new Map(); // conversation_id -> { space, tab, spaceName, tabName }
     this.selected = null;
     this.expanded = new Set();
@@ -362,11 +459,15 @@ export default class TStackReviews extends View {
     cx.timer.every(3000, (cx) => this.refresh(cx));
   }
 
+  // roles.json: "agents": { "<model or harness key>": { "name": "Sol", "color": "#10a37f" } }.
+  // The older "colors" block (sol, opus, gemini, implementer) is still honored.
   async loadColors() {
     try {
       const roles = JSON.parse((await readTextFile(ROLES_PATH())) ?? "{}");
-      this.colors = { ...DEFAULT_COLORS, ...(roles.colors && typeof roles.colors === "object" ? roles.colors : {}) };
-    } catch { this.colors = { ...DEFAULT_COLORS }; }
+      const object = (value) => (value && typeof value === "object" ? value : {});
+      this.colors = object(roles.colors);
+      this.agents = object(roles.agents);
+    } catch { this.colors = {}; this.agents = {}; }
   }
 
   // Remember where a task started: the space/tab of its originating session while it is live.
@@ -454,45 +555,67 @@ export default class TStackReviews extends View {
     }).catch(() => {});
   }
 
-  color(role) { return this.colors[role] ?? this.colors.other; }
+  // Name and color for an agent: the user's roles.json first, then the built-in defaults.
+  style(identity) {
+    const config = this.agents[identity.key] ?? this.agents[slug(identity.harness)] ?? {};
+    const legacy = /\bsol\b/.test(identity.key) ? this.colors.sol : /opus/.test(identity.key) ? this.colors.opus
+      : /gemini|argon/.test(identity.key) ? this.colors.gemini : /luna|opencode/.test(identity.key) ? this.colors.implementer : undefined;
+    const valid = (color) => (HEX.test(color ?? "") ? color : null);
+    return { name: config.name || identity.name, color: valid(config.color) ?? valid(legacy) ?? defaultColor(identity) };
+  }
+
+  avatar(identity, size) {
+    const { name, color } = this.style(identity);
+    return h_flex().w(size).h(size).rounded_full().items_center().justify_center().bg(color).tooltip(identity.full || name)
+      .child(div().text_size(Math.round(size * 0.46)).font_semibold().text_color(readable(color)).child(initials(name)));
+  }
+
+  statusChip(status, t) {
+    const color = TONES[status.tone];
+    return div().px(7).py(2).rounded_full().bg(mix(color, t.background, 0.18)).text_size(10.5).font_semibold()
+      .text_color(color).child(status.label);
+  }
 
   // ---- Task list -------------------------------------------------------------
 
   taskRow(task, t) {
     const where = this.context.get(task.id);
-    const preview = summarize(task.last).split("\n")[0].slice(0, 90);
-    return v_flex().w_full().gap(4).px(12).py(10).rounded(10).cursor_pointer()
-      .bg(t.raised).border(1).border_color(t.border)
+    const preview = summarize(task.last).split("\n")[0].slice(0, 110);
+    const shown = task.agents.slice(0, 4), more = task.agents.length - shown.length;
+    return v_flex().w_full().gap(5).px(14).py(11).cursor_pointer().border_b(1).border_color(t.border)
+      .hover((el) => el.bg(t.raised))
       .on_click((_event, cx) => { this.selected = task.id; cx.notify(); })
-      .child(h_flex().w_full().gap(8).items_center()
-        .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(13).text_color(t.foreground).child(task.title))
+      .child(h_flex().w_full().gap(10).items_start()
+        .child(div().flex_1().min_w(0).max_h(36).overflow_hidden().font_semibold().text_size(13).text_color(t.foreground).child(task.title))
         .child(div().text_size(10.5).text_color(t.dim).child(clock(task.last.created_at))))
-      .child(div().w_full().truncate().text_size(11.5).text_color(t.muted)
-        .child(`${displayName(task.last.sender)}: ${preview}`))
-      .child(h_flex().w_full().gap(6).items_center()
-        .children(task.roles.map((role) => div().w(8).h(8).rounded(4).bg(this.color(role))))
-        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim)
-          .child(`${where ? `${where.spaceName} › ${where.tabName} · ` : ""}Round ${task.rounds} · ${task.messages.length} msgs`)));
+      .child(div().w_full().truncate().text_size(12).text_color(t.muted).child(preview))
+      .child(h_flex().w_full().gap(8).items_center()
+        .child(h_flex().gap(3).items_center()
+          .children(shown.map((identity) => this.avatar(identity, 18)))
+          .when(more > 0, (el) => el.child(div().text_size(10.5).text_color(t.dim).child(`+${more}`))))
+        .when(Boolean(task.status.label), (el) => el.child(this.statusChip(task.status, t)))
+        .child(div().flex_1())
+        .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(`${where.spaceName} › ${where.tabName}`))));
   }
 
   listView(t) {
     const list = tasks(this.messages);
-    return v_flex().flex_1().min_h(0).min_w(0).overflow_y_scroll().gap(8).px(12).py(12)
+    return v_flex().flex_1().min_h(0).min_w(0).overflow_y_scroll()
       .when(list.length > 0, (el) => el.children(dated(list).flatMap((entry) => entry.day
-        ? [h_flex().w_full().gap(8).items_center().py(4)
+        ? [h_flex().w_full().gap(8).items_center().px(14).pt(14).pb(6)
             .child(div().flex_1().h(1).bg(t.border))
             .child(div().text_size(10.5).text_color(t.dim).child(entry.day))
             .child(div().flex_1().h(1).bg(t.border))]
         : [this.taskRow(entry.task, t)])))
-      .when(Boolean(this.status), (el) => el.child(div().w_full().text_size(13).text_color(t.muted).child(this.status)));
+      .when(Boolean(this.status), (el) => el.child(div().w_full().px(14).py(14).text_size(13).text_color(t.muted).child(this.status)));
   }
 
   // ---- Conversation ----------------------------------------------------------
 
   bubble(task, message, t, available) {
-    const role = roleOf(message);
-    const accent = this.color(role);
-    const right = role === "implementer";
+    const identity = identityOf(message);
+    const { name, color: accent } = this.style(identity);
+    const right = message.source_session === task.originSession; // the coordinator who started the task
     const tick = receipt(task, message, this.deliveries, this.reads);
     const open = this.expanded.has(message.event_id);
     const summary = summarize(message);
@@ -502,7 +625,9 @@ export default class TStackReviews extends View {
     const resumeEnd = !available && this.resumable.has(endKey) ? this.ends.get(endKey) : null;
     const card = v_flex().max_w(760).min_w(0).gap(6).px(12).py(9).rounded(12)
       .bg(mix(accent, t.background, 0.22)).border(1).border_color(mix(accent, t.background, 0.55))
-      .child(div().w_full().truncate().font_semibold().text_size(12).text_color(accent).child(displayName(message.sender)))
+      .child(h_flex().w_full().gap(6).items_center().tooltip(identity.full || name)
+        .child(div().min_w(0).truncate().font_semibold().text_size(12).text_color(accent).child(name))
+        .when(Boolean(identity.harness) && identity.harness !== name, (el) => el.child(div().text_size(10.5).text_color(t.dim).child(identity.harness))))
       .child(v_flex().w_full().gap(3).children(summary.split("\n").map((line) => div().w_full().text_size(13.5).text_color(t.foreground).child(line))))
       .when(open, (el) => el.child(v_flex().w_full().gap(6).pt(6).mt(2).border_t(1).border_color(mix(accent, t.background, 0.4))
         .child(TextView.markdown(`review-${message.event_id}`, prettify(message.text, task)).selectable(true).on_link_click((url) => this.openLink(url)))))
@@ -516,7 +641,8 @@ export default class TStackReviews extends View {
         .when(!available && resumeEnd, (el) => el.child(div().text_size(10.5).text_color(t.accent).cursor_pointer().on_click(() => this.resume(resumeEnd)).child("Resume session")))
         .child(div().text_size(10.5).text_color(t.dim).child(clock(message.created_at)))
         .when(Boolean(tick.mark), (el) => el.child(div().text_size(11).font_semibold().text_color(tickColor).child(tick.mark))));
-    return h_flex().w_full().when(right, (el) => el.justify_end()).child(card);
+    // The gutter keeps a long bubble from filling the row, so the coordinator reads as "right" and the rest as "left".
+    return h_flex().w_full().when(right, (el) => el.justify_end().pl(40)).when(!right, (el) => el.pr(40)).child(card);
   }
 
   chatView(task, t, live) {
@@ -526,25 +652,28 @@ export default class TStackReviews extends View {
     for (const message of task.messages) {
       if (message.round !== round) {
         round = message.round;
-        rows.push(div().w_full().text_size(10.5).text_color(t.dim).child(`— Round ${round} · head ${message.head_sha.slice(0, 7)} —`));
+        rows.push(h_flex().w_full().gap(8).items_center().py(4)
+          .child(div().flex_1().h(1).bg(t.border))
+          .child(div().text_size(10.5).text_color(t.dim).child(`Round ${round} · head ${message.head_sha.slice(0, 7)}`))
+          .child(div().flex_1().h(1).bg(t.border)));
       }
       rows.push(this.bubble(task, message, t, live.has(message.source_session)));
     }
+    const meta = [where ? `${where.spaceName} › ${where.tabName}` : null, `${task.repo} @ ${task.head.slice(0, 7)}`].filter(Boolean).join("  ·  ");
     return v_flex().flex_1().min_h(0).min_w(0).child(
-      v_flex().w_full().gap(4).px(14).py(10).border_b(1).border_color(t.border)
+      v_flex().w_full().gap(7).px(14).pt(10).pb(11).border_b(1).border_color(t.border)
+        .child(div().text_size(11.5).text_color(t.accent).cursor_pointer()
+          .on_click((_event, cx) => { this.selected = null; cx.notify(); }).child("← Tasks"))
+        .child(div().w_full().font_semibold().text_size(14).text_color(t.foreground).child(task.title))
+        .child(h_flex().w_full().flex_wrap().gap_x(12).gap_y(5)
+          .children(task.agents.map((identity) => h_flex().gap(5).items_center().tooltip(identity.full || identity.name)
+            .child(this.avatar(identity, 16))
+            .child(div().text_size(11.5).text_color(t.muted).child(this.style(identity).name)))))
         .child(h_flex().w_full().gap(8).items_center()
-          .child(div().px(8).py(4).rounded(7).cursor_pointer().bg(t.raised).text_size(11.5)
-            .on_click((_event, cx) => { this.selected = null; cx.notify(); }).child("← Tasks"))
-          .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(13).child(task.title)))
-        .child(h_flex().w_full().gap(6).items_center()
-          .children(task.roles.map((role) => h_flex().gap(4).items_center()
-            .child(div().w(8).h(8).rounded(4).bg(this.color(role)))
-            .child(div().text_size(10.5).text_color(t.muted).child(role))))
-          .child(div().flex_1()))
-        .child(div().w_full().truncate().text_size(10.5).text_color(t.dim).child(`${task.repo} · ${task.worktree.split("/").pop()} · ${task.head.slice(0, 7)}`))
-        .when(Boolean(where), (el) => el.child(div().w_full().truncate().text_size(11).text_color(t.accent).cursor_pointer()
-          .on_click(() => run("tab.select", { id: where.tab }))
-          .child(`Started in ${where.spaceName} › ${where.tabName} (go to tab)`))))
+          .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(meta))
+          .when(Boolean(task.status.label), (el) => el.child(this.statusChip(task.status, t)))
+          .when(Boolean(where), (el) => el.child(div().text_size(10.5).text_color(t.accent).cursor_pointer()
+            .on_click(() => run("tab.select", { id: where.tab })).child("Go to tab ↗")))))
       .child(v_flex().flex_1().min_h(0).min_w(0).overflow_y_scroll().gap(10).px(12).py(12).children(rows));
   }
 
@@ -561,4 +690,4 @@ export default class TStackReviews extends View {
   }
 }
 
-export { parseLog, tasks, receipt, prettify, dated, summarize, safeResume };
+export { parseLog, tasks, receipt, prettify, dated, summarize, safeResume, identityOf, identityFrom, normalizeModel, statusOf };

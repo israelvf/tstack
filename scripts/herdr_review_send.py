@@ -203,7 +203,7 @@ def main(argv=None):
     send.add_argument("--repo"); send.add_argument("--worktree"); send.add_argument("--base-sha"); send.add_argument("--head-sha")
     send.add_argument("--criteria", action="append"); send.add_argument("--evidence", action="append")
     send.add_argument("--sender-name", help='e.g. "Claude Code Claude Sonnet 5.5"'); send.add_argument("--sender-model")
-    send.add_argument("--summary", help="one or two chat-style sentences, at most 500 characters")
+    send.add_argument("--summary", help="one or two sentences addressed to the recipients, in the first person, at most 500 characters")
     send.add_argument("--title", help="first message of a task: short human title; also logs space and tab")
     receive = parser.add_argument_group("receive")
     receive.add_argument("--session", help="the reviewer's hc address that wrote the reply")

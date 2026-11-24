@@ -119,10 +119,10 @@ any Git repository; it is yours, not part of this project.
     "sol":  { "harness": "codex",       "model": "gpt-6.1-sol" },
     "opus": { "harness": "claude-code", "model": "claude-opus-5-5" }
   },
-  "colors": {
-    "implementer": "#2563eb",
-    "sol": "#10a37f",
-    "opus": "#d97757"
+  "agents": {
+    "gpt-6.1-sol":     { "name": "Sol",  "color": "#10a37f" },
+    "claude-opus-5.5": { "name": "Opus", "color": "#d97757" },
+    "opencode":        { "color": "#2563eb" }
   }
 }
 ```
@@ -130,9 +130,14 @@ any Git repository; it is yours, not part of this project.
 - `implementer` and `reviewers` record which harness and model fill each role.
   A model listed in a harness catalogue only proves it exists. The skills
   still confirm the model a running session actually uses before sending.
-- `colors` sets the Reviews bubble color per agent as `#rrggbb`. Keys are
-  `implementer`, `sol`, `opus`, `gemini` and `other`. Missing keys use the
-  built-in defaults.
+- `agents` sets how the Reviews panel shows an agent: an optional short `name` and
+  a `#rrggbb` `color`. An agent is its harness plus its model, so the key is the
+  model name in lowercase with dashes (`gpt-6.1-sol`, `claude-opus-5.5`,
+  `claude-sonnet-5.5`), or a harness (`opencode`, `codex`, `claude-code`) to cover
+  every model of it. Without an entry the panel shows the model name as it is
+  logged (normalized, for example `Claude Opus 5.5`) and a built-in color; an agent
+  it does not know gets a stable color derived from its name, never a shared grey.
+  The older `colors` block (`sol`, `opus`, `gemini`, `implementer`) still works.
 
 ## Workflows
 
@@ -332,18 +337,25 @@ recent messages and refreshes every 3 seconds. Pass a `logPath` prop to point it
 at another file.
 
 - **Task list.** One entry per `conversation_id`, newest first, split by a
-  divider line per day (`dd/mm/yy`). Each entry shows a title, a preview of the
-  latest message, colored dots for the participants, the round and the message
-  count.
+  divider line per day (`dd/mm/yy`), with no card borders. Each entry shows the
+  title (up to two lines), the latest message's summary, a badge per participant
+  (its initials, in its color), a status chip and where the task started. The status
+  reads the latest round: `Awaiting reply`, `Awaiting 1 of 2`, `Changes requested`,
+  `Approved` or `Inconclusive`.
 - **Title.** The `title` field if present, otherwise the first message's
   `Subject:` line (`Assunto:` also works), otherwise the repository and a
   short commit SHA.
-- **Conversation.** Selecting a task opens its group chat: one bubble per
-  message in the author's color, round separators, and an "Open session" action
+- **Conversation.** Selecting a task opens its group chat. The header has a back
+  link, the title, a badge and name per participant, one muted line with where the
+  task started and the repository at the reviewed commit, the status chip and a
+  "Go to tab" link. Messages are one bubble each, in the author's color with the
+  model as its name and the harness as a small tag (hover for the full name), the
+  coordinator's on the right; plus round separators, and an "Open session" action
   while the source session is alive. Each bubble shows a short summary; the full
   message sits behind "Details".
 - **Summaries.** The optional `summary` field (at most 500 characters, written
-  by the sending agent like a chat line) is shown as is. A read-only reviewer
+  by the sending agent as a short message addressed to the recipients, in the
+  first person) is shown as is. A read-only reviewer
   cannot write the log, so it opens its final message with a `Summary:` line.
   The coordinator copies that line verbatim into `summary` and never writes one
   on the reviewer's behalf; the panel also reads a leading `Summary:` line from
