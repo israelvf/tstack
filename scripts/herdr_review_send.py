@@ -377,13 +377,21 @@ def addressed_to(log_file, conversation, round_number):
 AGENT_HARNESS = {"claude": "claude", "claude-code": "claude", "codex": "codex"}
 
 
-def folder_sharers(harness, cwd, address):
-    """Other terminals (live or ended) of the same harness that ran in the same folder.
+def machine_of(address):
+    """The machine a terminal lives on: the part before the slash in `machine/t1p`, empty for this computer."""
+    return address.rpartition("/")[0]
 
-    Folders are compared by their real path on both sides, so a symlink to the same folder counts. An answer from
-    hc that cannot be read raises, because "nobody shares it" must never be assumed.
+
+def folder_sharers(harness, cwd, address):
+    """Other terminals (live or ended) of the same harness, on the same machine, that ran in the same folder.
+
+    On this computer folders are compared by their real path on both sides, so a symlink to the same folder
+    counts. A path on another machine is a different folder, so terminals of other machines are ignored (and their
+    paths are never resolved here). An answer from hc that cannot be read raises, because "nobody shares it" must
+    never be assumed.
     """
-    mine = {cwd, os.path.realpath(cwd)}
+    machine = machine_of(address or "")
+    mine = {cwd} | ({os.path.realpath(cwd)} if not machine else set())
     listing = hc_json("ls", "--all")
     rows = listing.get("terminals") if isinstance(listing, dict) else None
     if not isinstance(rows, list):
@@ -392,10 +400,10 @@ def folder_sharers(harness, cwd, address):
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get("address"), str):
             raise ValueError("hc ls listed an entry without an address, so the folder cannot be checked for other terminals")
-        if row["address"] == address or AGENT_HARNESS.get(row.get("agent")) != harness:
+        if row["address"] == address or machine_of(row["address"]) != machine or AGENT_HARNESS.get(row.get("agent")) != harness:
             continue
         other = row.get("cwd")
-        if isinstance(other, str) and (other in mine or os.path.realpath(other) in mine):
+        if isinstance(other, str) and (other in mine or (not machine and os.path.realpath(other) in mine)):
             sharers.append(row["address"])
     return sorted(sharers)
 
@@ -404,6 +412,8 @@ def reply_from_history(args):
     info = hc_json("get", args.session)
     argv = info.get("argv") or []
     harness = argv[0] if argv and argv[0] in ("claude", "codex") else None
+    if machine_of(info.get("address") or args.session):
+        raise ValueError(f"{args.session} runs on another machine, whose history is not on this computer; use hc read")
     if not harness:
         raise ValueError(f"{args.session} is not a claude or codex session; use hc read")
     if info.get("state") == "live" and (info.get("status") or {}).get("state") == "working":

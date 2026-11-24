@@ -220,5 +220,29 @@ class CleanupTests(unittest.TestCase):
         self.assertFalse(any(call[1:] == ["append"] for call in calls))
 
 
+    def test_cleanup_ignores_terminals_of_other_machines(self):
+        from scripts import herdr_review_cleanup as cleanup
+        rows = [{"address": "tA", "agent": "codex", "cwd": "/snap"}, {"address": "other-host/tB", "agent": "codex", "cwd": "/snap"},
+                {"address": "other-host/tC", "agent": "codex", "cwd": "/snap"}]
+        with mock.patch.object(cleanup, "hc_json", lambda *x: {"terminals": rows}):
+            self.assertEqual(cleanup.folder_sharers("codex", "/snap", "tA"), [])
+            self.assertEqual(cleanup.folder_sharers("codex", "/snap", "other-host/tB"), ["other-host/tC"])
+
+
+    def test_cleanup_records_no_resume_command_for_a_terminal_on_another_machine(self):
+        from scripts import herdr_review_cleanup as cleanup
+        info = {"argv": ["codex", "--sandbox", "read-only"], "cwd": "/snap", "created_ms": 0}
+        calls = []
+        def hc(*args):
+            return {"terminals": []} if args[0] == "ls" else {**info, "state": "finished"}
+        with mock.patch.object(cleanup, "hc_json", hc), mock.patch.object(cleanup, "find_resume_id") as find, \
+                mock.patch.object(cleanup.subprocess, "run", lambda cmd, **k: calls.append(cmd[:2]) or mock.Mock(returncode=0)):
+            ended, problem = end_session(str(uuid.uuid4()), {"address": "other-host/t7"}, Path("/tmp/none.jsonl"))
+        self.assertTrue(ended)
+        self.assertIn("another machine", problem)
+        find.assert_not_called()
+        self.assertIn(["hc", "kill"], calls)
+
+
 if __name__ == "__main__":
     unittest.main()

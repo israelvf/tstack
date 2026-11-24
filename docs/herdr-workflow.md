@@ -327,12 +327,14 @@ herdr-review-send last-reply --conversation <uuid> --round <n> --session <addres
   begun after the terminal was created, and before it ended); one that began earlier, or
   whose start cannot be told, is refused, and so is a choice that an undated candidate
   could change. Because histories are keyed by folder, it also requires that no other
-  terminal of the same harness, live or ended (`hc ls --all`), ran in that folder; if one
+  terminal of the same harness, live or ended (`hc ls --all`) and on the same machine, ran
+  in that folder; if one
   did, `last-reply` refuses and names it, so each reviewer of a harness gets its own folder
   (one snapshot folder per conversation does). Terminals removed with `hc rm` and agents
   run outside `hc` are invisible to that check. When the log recorded where the request
   went, any other session is refused. A session resumed with `--resume` continues an older
-  history, so use `hc read` for it.
+  history, so use `hc read` for it, and for a terminal on another machine (address
+  `machine/t1p`), whose history is not on this computer.
 - A header inside a fenced code block is not a header, and conversation ids are matched
   without regard to case.
 - After `hc send`, `hc wait` can report `idle` or `done` from before the reviewer

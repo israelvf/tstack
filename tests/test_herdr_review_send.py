@@ -440,6 +440,33 @@ class HistoryTests(unittest.TestCase):
                 self.assertEqual(send.folder_sharers("codex", str(alias), "t2"), ["t1"])
                 self.assertEqual(send.folder_sharers("claude", str(real), "t1"), [])
 
+    def test_terminals_of_other_machines_are_not_sharing_the_folder(self):
+        rows = [{"address": "tA", "agent": "codex", "cwd": "/snap"},
+                {"address": "other-host/tB", "agent": "codex", "cwd": "/snap"},
+                {"address": "other-host/tC", "agent": "codex", "cwd": "/snap"},
+                {"address": "third/tD", "agent": "codex", "cwd": "/snap"}]
+        with mock.patch.object(send, "hc_json", lambda *x: {"terminals": rows}):
+            self.assertEqual(send.folder_sharers("codex", "/snap", "tA"), [])                      # remote paths are other folders
+            self.assertEqual(send.folder_sharers("codex", "/snap", "other-host/tB"), ["other-host/tC"])  # same machine, same folder
+            self.assertEqual(send.machine_of("tA"), "")
+            self.assertEqual(send.machine_of("other-host/tB"), "other-host")
+
+    def test_a_remote_path_is_never_resolved_on_this_computer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            real = Path(temp) / "real"; real.mkdir()
+            alias = Path(temp) / "alias"; alias.symlink_to(real)
+            rows = [{"address": "h/t1", "agent": "codex", "cwd": str(real)}, {"address": "h/t2", "agent": "codex", "cwd": str(alias)}]
+            with mock.patch.object(send, "hc_json", lambda *x: {"terminals": rows}):
+                self.assertEqual(send.folder_sharers("codex", str(real), "h/t1"), [])  # a link on this computer says nothing about host h
+
+    def test_a_terminal_on_another_machine_is_not_read_from_local_histories(self):
+        a = types.SimpleNamespace(session="other-host/t1", conversation=self.CONV, round=1, file=Path("/nonexistent/log"))
+        info = {"address": "other-host/t1", "argv": ["codex"], "state": "finished", "cwd": "/snap", "created_ms": 0}
+        with mock.patch.object(send, "hc_json", lambda *x: info), mock.patch.object(send, "find_session_file") as find:
+            with self.assertRaisesRegex(ValueError, "another machine"):
+                send.reply_from_history(a)
+            find.assert_not_called()
+
     def test_an_hc_ls_answer_that_cannot_be_read_is_refused_not_assumed_empty(self):
         for bad in ({}, [], "x", {"terminals": None}, {"terminals": "x"}, {"terminals": [{"cwd": "/x", "agent": "codex"}]},
                     {"terminals": ["t1"]}, {"terminals": [{"address": 7}]}):
