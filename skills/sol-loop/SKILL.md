@@ -60,7 +60,9 @@ severity, `file:line`, impact, concrete failure scenario, reproduction/evidence,
 and the smallest suggested fix. Require verdict `APPROVE`, `CHANGES_REQUESTED`,
 or `INCONCLUSIVE`; an unverified suspicion is not a confirmed defect.
 
-Before sending, append the exact outgoing message to the local log using
+Send and log with `herdr-review-send send` (see `herdr-messaging`), and log the
+reply with `herdr-review-send receive`. To log by hand instead, before sending append
+the exact outgoing message to the local log using
 `python3 scripts/herdr_review_log.py append` (or the installed script path).
 After `hc send`, record the returned receipt without retrying. A timeout,
 `status_mismatch`, blocked terminal or uncertain delivery is not approval; read

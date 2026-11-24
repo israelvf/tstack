@@ -118,6 +118,32 @@ A read-only reviewer must never need a permission dialog to do its job.
   reviewer's final message is already complete on screen, it may be logged as
   received; a command it only proposed to run is not a review.
 
+### Send and log with `herdr-review-send`
+
+Do not assemble the log records and `hc send` calls by hand: it is easy to give each
+recipient its own `group_message_id`, which splits one brief into several bubbles.
+`herdr-review-send` (or `python3 scripts/herdr_review_send.py`) does the whole sequence:
+
+```sh
+# one brief to several reviewers: one group_message_id, same text, a record and a receipt each
+herdr-review-send send --conversation <uuid> --round 1 --text-file brief.txt \
+  --repo owner/repo --worktree /path/to/snapshot --base-sha <40-hex> --head-sha <40-hex> \
+  --criteria "..." --evidence "..." --sender-name "Claude Code Claude Sonnet 5.5" \
+  --sender-model claude-sonnet-5-5 --summary "<chat-style summary>" --title "<task title>" \
+  --to "label=Codex GPT-6.1 Sol,model=gpt-6.1-sol,target=<hc address or name>" \
+  --to "label=Claude Code Claude Opus 5.5,model=claude-opus-5-5,target=<hc address or name>"
+
+# a reviewer's final message, copied from its screen into a file (without tool output)
+herdr-review-send receive --conversation <uuid> --round 1 --session <reviewer address> --text-file reply.txt
+```
+
+`send` logs each message before sending it, uses `--if idle` only for idle sessions,
+skips sessions that are not live or are working or blocked (reporting why), and keeps
+going if one delivery cannot be logged. `--title` also logs the space and tab. Pass
+`--title` on the first message of a task only. `receive` reuses the snapshot fields of
+your request from the log, moves a leading `Summary:` line into the `summary` field
+(unchanged) and records your read receipt. It never writes a summary for the reviewer.
+
 ### Cleanup
 
 A finished review leaves dedicated reviewer sessions running and snapshot folders

@@ -67,7 +67,9 @@ failure scenario, reproduction/evidence, and the smallest suggested action.
 Use `APPROVE`, `CHANGES_REQUESTED` or `INCONCLUSIVE`. Scores are optional and
 never votes.
 
-Use one logical group message for the brief. Before each `hc send`, append a
+Use one logical group message for the brief. `herdr-review-send send` (see
+`herdr-messaging`) does this correctly: one shared `group_message_id`, a record
+before each `hc send` and a delivery receipt. If you log by hand instead, append a
 per-recipient record with the same `group_message_id` (one new UUID for the
 brief), identical clean text and a distinct `event_id`. Keep recipient-specific
 routing outside the clean text. Preserve each `hc` receipt against its own

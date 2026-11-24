@@ -62,9 +62,10 @@ harnesses link to.
 ```sh
 install -D -m 755 scripts/herdr_review_log.py ~/.local/bin/herdr-review-log
 install -D -m 755 scripts/herdr_review_cleanup.py ~/.local/bin/herdr-review-cleanup
+install -D -m 755 scripts/herdr_review_send.py ~/.local/bin/herdr-review-send
 ```
 
-Install both: `herdr-review-cleanup` records resume commands through the logger.
+Install all three: `herdr-review-cleanup` and `herdr-review-send` write through the logger.
 
 ### Reviews panel
 
@@ -226,6 +227,11 @@ herdr-review-cleanup snapshots --conversation <uuid> --yes       # delete snapsh
   deleting a snapshot prevents resuming the reviewers later. Only real folders
   directly under the review root (`~/.cache/tstack-review/`, or
   `TSTACK_REVIEW_ROOT`) are removed; symlinks and other paths are skipped.
+- **Review root.** The logger and the cleanup script read `TSTACK_REVIEW_ROOT`. The
+  panel cannot see your shell environment, so if you change the root, also pass the
+  same path as the panel's `reviewRoot` prop. Otherwise the panel rejects every
+  resume record and "Resume session" never appears. Both sides require the session
+  folder to be a plain name directly under the root, with symlinks resolved.
 - **In the panel**, an ended session shows **Resume session** in place of
   **Open session** while its snapshot folder still exists. It reopens the
   reviewer in that folder, read-only, with its full history. Once the snapshot is
@@ -252,6 +258,33 @@ with its own evidence, then re-runs checks after fixes.
 Delivery is `hc send`. Keep the receipt `hc` returns (`started`, `status`,
 `turn`). If delivery is uncertain, inspect the same session before resending:
 the text may already have arrived.
+
+## Sending and logging messages
+
+`herdr-review-send` sends a brief to one or more sessions and logs it in the right
+shape. Use it instead of hand-assembling records, because the details are easy to get
+wrong (for example giving each recipient its own `group_message_id`, which shows one
+brief as several bubbles).
+
+```sh
+herdr-review-send send --conversation <uuid> --round 1 --text-file brief.txt \
+  --repo owner/repo --worktree /path/to/snapshot --base-sha <sha> --head-sha <sha> \
+  --criteria "..." --evidence "..." --sender-name "Claude Code Claude Sonnet 5.5" \
+  --sender-model claude-sonnet-5-5 --summary "..." --title "..." \
+  --to "label=Codex GPT-6.1 Sol,model=gpt-6.1-sol,target=<address>" \
+  --to "label=Claude Code Claude Opus 5.5,model=claude-opus-5-5,target=<address>"
+
+herdr-review-send receive --conversation <uuid> --round 1 --session <address> --text-file reply.txt
+```
+
+- `send` shares one `group_message_id` and the same text across recipients, logs each
+  message before delivering it, records the `hc` receipt, uses `--if idle` only for
+  idle sessions, skips sessions that are not live or are working/blocked (and says
+  why), and keeps going if one delivery cannot be logged. `--title` also records the
+  space and tab; use it on a task's first message.
+- `receive` takes a reviewer's clean final message from a file, reuses the snapshot
+  fields of your request from the log, moves a leading `Summary:` line into the
+  `summary` field unchanged, and records your read receipt.
 
 ## Message log
 
