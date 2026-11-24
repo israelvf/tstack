@@ -171,7 +171,8 @@ function fileLink(task, ref, line, end) {
 }
 
 function prettify(text, task) {
-  const body = text.replace(/^\s*(?:Subject|Assunto):[^\n]*\n+/i, ""); // the title is already in the header
+  const body = text.replace(/^\s*(?:Subject|Assunto):[^\n]*\n+/i, "") // the title is already in the header
+    .replace(SUMMARY_LINE, ""); // the summary is already the bubble text
   return body.split(FENCE).map((part, index) => {
     if (index % 2) return part; // fenced code stays as written
     let out = part
@@ -246,8 +247,13 @@ function intentOf(text) {
 }
 
 // The agent's own "summary" field wins. Older or summary-less messages get a rule-based one.
+const SUMMARY_LINE = /^\s*Summary:[ \t]*(.+)(?:\n+|$)/i;
+
 function summarize(message) {
   if (typeof message.summary === "string" && message.summary.trim()) return message.summary.trim();
+  // A reviewer may open its reply with "Summary: …" when the field was not copied to the log.
+  const written = SUMMARY_LINE.exec(message.text);
+  if (written && written[1].trim()) return shorten(written[1].trim(), 500);
   const text = message.text.trim();
   const verdict = message.direction === "incoming" ? /\b(APPROVE|CHANGES_REQUESTED|INCONCLUSIVE)\b/.exec(text.slice(0, 300)) : null;
   if (verdict) {

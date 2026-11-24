@@ -73,7 +73,9 @@ record it with `python3 scripts/herdr_review_log.py read --conversation <uuid>
 --event <event_id>`.
 
 In the request, tell Sol to write the review as its final message in its own
-session and not to use `hc send` (a read-only sandbox cannot reach the core).
+session and not to use `hc send` (a read-only sandbox cannot reach the core),
+opening it with a one-line `Summary:` (see `herdr-messaging`) that you copy
+verbatim into the log's `summary` field.
 Launch it with `--ask-for-approval never` and keep the snapshot under the stable
 root described in `herdr-messaging`.
 

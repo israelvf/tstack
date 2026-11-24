@@ -89,7 +89,9 @@ soon as its turn finishes. Process whichever completes first. Correlate the
 final reply to the conversation, round and SHA and append it immediately as
 one `incoming` group message, before waiting on any other reviewer or
 verifying findings. Tell each reviewer to write its review as the final message
-in its own session, not with `hc send`, and read it with `hc read` once idle.
+in its own session, not with `hc send`, opening it with a one-line `Summary:`
+(see `herdr-messaging`) that you copy verbatim into the log's `summary` field,
+and read it with `hc read` once idle.
 Mark a permission, folder-trust or plan dialog as blocked, report which one and
 what it asks, and do not answer it for the reviewer or record it as a final
 review.

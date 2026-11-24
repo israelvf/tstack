@@ -269,7 +269,11 @@ at another file.
   while the source session is alive. Each bubble shows a short summary; the full
   message sits behind "Details".
 - **Summaries.** The optional `summary` field (at most 500 characters, written
-  by the sending agent like a chat line) is shown as is. Messages without one
+  by the sending agent like a chat line) is shown as is. A read-only reviewer
+  cannot write the log, so it opens its final message with a `Summary:` line.
+  The coordinator copies that line verbatim into `summary` and never writes one
+  on the reviewer's behalf; the panel also reads a leading `Summary:` line from
+  the text. Messages without one
   get a rule-based summary: for reviews, the verdict, a count by severity and the
   top three findings (one line each); for requests, "Review requested", the
   criteria count and the stated intent; otherwise the first sentence. Per-recipient copies sharing a `group_message_id` appear as one bubble.

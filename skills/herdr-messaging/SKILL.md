@@ -92,6 +92,14 @@ A read-only reviewer must never need a permission dialog to do its job.
   correlates the text with the conversation, round and SHA, and logs it. The
   reviewer never touches the log. Replying with `hc send` stays valid for peers
   that are not read-only reviewers.
+- **The reviewer writes its own summary.** In the request, ask the reviewer to
+  open its final message with one line, `Summary: <one or two chat-style
+  sentences, at most 500 characters, in the language the user uses>`, followed
+  by the verdict and findings as usual. The coordinator copies that line
+  verbatim into the record's `summary` field and removes it from `text`. The
+  coordinator never writes or rewrites a reviewer's summary; if the line is
+  missing, log the reply without `summary` and let the panel's rule-based
+  fallback apply. The panel also reads a leading `Summary:` line from `text`.
 - **Fail instead of asking.** Launch Codex with `--ask-for-approval never`: an
   escalation request is denied and returned to the model instead of waiting for
   a person, and the sandbox is unchanged. Claude Code runs in plan mode with the
@@ -328,7 +336,8 @@ the tab bar"), `space_id`, `tab_id`, `space_name` and `tab_name` (where the task
 started). Get the last four with `herdr-review-log context` (it uses
 `HC_TERMINAL_ID` and the labels Herdr writes; never invent values).
 
-Every `message` record should also carry a `summary`: one or two plain
+Every `message` record should also carry a `summary` (for a reviewer's reply,
+the reviewer writes it; see "Reply channel, permissions and trust"): one or two plain
 sentences (at most 500 characters) saying what the message does, written like a
 chat line in the language the user is using. For example "Asked Sol to review
 the tab bar fix, read-only" or "Approved; no findings". Do not paste the
