@@ -72,9 +72,16 @@ and the `space_id`/`tab_id`/`space_name`/`tab_name` printed by
 record it with `python3 scripts/herdr_review_log.py read --conversation <uuid>
 --event <event_id>`.
 
+In the request, tell Sol to write the review as its final message in its own
+session and not to use `hc send` (a read-only sandbox cannot reach the core).
+Launch it with `--ask-for-approval never` and keep the snapshot under the stable
+root described in `herdr-messaging`.
+
 Do not edit the reviewed snapshot while Sol is working. Wait with `hc wait`;
 then read the same terminal and correlate the reply to this conversation and
-round. Timeout, error, no reply or review of an older SHA is not approval.
+round. Timeout, error, no reply or review of an older SHA is not approval. If
+the terminal is `blocked` by a permission, trust or plan dialog, report which
+one and what it asks; do not answer it for Sol.
 
 ## 3. Verify findings
 

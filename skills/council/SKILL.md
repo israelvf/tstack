@@ -88,8 +88,11 @@ sessions concurrently: use separate bounded `hc wait` calls, or
 soon as its turn finishes. Process whichever completes first. Correlate the
 final reply to the conversation, round and SHA and append it immediately as
 one `incoming` group message, before waiting on any other reviewer or
-verifying findings. Mark a permission prompt or plan artifact as blocked,
-without recording it as a final review.
+verifying findings. Tell each reviewer to write its review as the final message
+in its own session, not with `hc send`, and read it with `hc read` once idle.
+Mark a permission, folder-trust or plan dialog as blocked, report which one and
+what it asks, and do not answer it for the reviewer or record it as a final
+review.
 
 When all reviewers have replied or reached a terminal outcome for the round,
 relay each final review once to the other available reviewer as group context,

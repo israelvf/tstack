@@ -174,6 +174,32 @@ so a resumed run finds it instead of creating a duplicate. The launch commands
 are in `skills/herdr-messaging/SKILL.md`. Nothing relaxes permissions on
 existing sessions, uses bypass flags or runs a one-shot print mode.
 
+### Permissions and trust
+
+A read-only reviewer must not need a permission dialog to do its job. Three
+rules keep sessions from stalling:
+
+- **Reviewers reply on screen.** `hc` reaches the core through a socket and lock
+  outside a read-only sandbox, so a sandboxed reviewer that runs `hc send` stops
+  at an approval prompt. Instead the reviewer writes its review as its final
+  message. The coordinator runs `hc wait`, reads the session with `hc read`,
+  and logs the text. Reviewers never write the log.
+- **Fail instead of asking.** Codex is launched with `--ask-for-approval never`,
+  so an attempt to leave the sandbox is denied and returned to the model rather
+  than waiting for a person. The sandbox itself does not change. Claude Code
+  runs in plan mode with write and shell tools disallowed.
+- **One stable snapshot root.** Harnesses remember folder trust per path. With
+  Claude Code, a folder inside a trusted directory opens without a dialog,
+  while a new folder elsewhere (such as under `/tmp`) asks whether to trust it.
+  Create every review snapshot under one root, for example
+  `~/.cache/tstack-review/`, and trust that root once by opening the harness
+  there. The workflow never edits trust settings for you.
+
+If a dialog still appears, the session is reported as `blocked` with which
+dialog it is (permission, folder trust or plan approval) and what each answer
+would grant. Nothing answers it on the reviewer's behalf, and a prompt is never
+recorded as a review.
+
 ## Review contract
 
 A review request is a clean message carrying: `conversation_id`, `round`,
