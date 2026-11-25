@@ -28,7 +28,7 @@ implementer ──ACP──▶ reviewer A ─┐
   Agent Client Protocol (ACP). The request goes in a prompt; the review comes back
   as structured data through a `submit_review` tool, never as parsed text. Raw
   tool calls and intermediate text are never logged as conversation. Terminal
-  reviewers (`hc send`) remain available as a fallback.
+  reviewers are retired.
 
 ## Requirements
 
@@ -181,94 +181,41 @@ trigger `full-stop`.
   a stale commit, that is reported with an explicit status. It never counts as
   approval, and a partial council is labelled partial. A proven defect blocks
   the change even if the other reviewers approve.
-- **Antigravity** is not in the default council: its interactive plan mode can
-  stop at an "Approve plan" prompt instead of returning a review.
 - **`full-stop`** proves the change, reviews it, files a PR with `file-pr`,
   watches CI and reviews with `babysit-pr`, and stops before merging. It never
   calls `full-send`, never enables auto-merge and never merges.
 
-### Finding and selecting sessions
+### Terminal reviewers (retired)
 
-Reviewer sessions are resolved with `hc`, never guessed from a name or the
-executable:
-
-```sh
-hc ls --json                      # index of sessions
-hc get <address> --json           # cwd, labels, state
-hc read <address> --lines 0       # current screen: model, readiness
-```
-
-A session is reused only if it is free, runs the exact model, can read the
-snapshot and is effectively read-only. Otherwise an explicit `council` or
-`sol-loop` invocation authorises starting a dedicated interactive session in
-the harness's native read-only mode, named and labelled after the conversation
-so a resumed run finds it instead of creating a duplicate. The launch commands
-are in `skills/herdr-messaging/SKILL.md`. Nothing relaxes permissions on
-existing sessions, uses bypass flags or runs a one-shot print mode.
-
-### Permissions and trust
-
-A read-only reviewer must not need a permission dialog to do its job. Three
-rules keep sessions from stalling:
-
-- **Reviewers reply on screen.** `hc` reaches the core through a socket and lock
-  outside a read-only sandbox, so a sandboxed reviewer that runs `hc send` stops
-  at an approval prompt. Instead the reviewer writes its review as its final
-  message. The coordinator runs `hc wait`, reads the session with `hc read`,
-  and logs the text. Reviewers never write the log.
-- **Fail instead of asking.** Codex is launched with `--ask-for-approval never`,
-  so an attempt to leave the sandbox is denied and returned to the model rather
-  than waiting for a person. The sandbox itself does not change. Claude Code
-  runs in plan mode with write and shell tools disallowed.
-- **One stable snapshot root.** Harnesses remember folder trust per path. With
-  Claude Code, a folder inside a trusted directory opens without a dialog,
-  while a new folder elsewhere (such as under `/tmp`) asks whether to trust it.
-  Create every review snapshot under one root, for example
-  `~/.cache/tstack-review/`, and trust that root once by opening the harness
-  there. The workflow never edits trust settings for you.
-
-If a dialog still appears, the session is reported as `blocked` with which
-dialog it is (permission, folder trust or plan approval) and what each answer
-would grant. Nothing answers it on the reviewer's behalf, and a prompt is never
-recorded as a review.
+Reviewers used to run as `hc` terminals that the coordinator launched, waited on and
+read from the screen. That flow is retired: every reviewer is now a child process of
+`herdr-review-acp` (see "Reviewers over ACP"), so nothing is launched, no dialog can
+stall a turn and no screen is read. `hc` is still used to message sessions that are
+already running (`herdr-review-send`, below).
 
 ### Cleanup
 
-A finished review leaves dedicated reviewer sessions and snapshot folders behind.
-`herdr-review-cleanup` cleans one conversation:
+A finished review leaves snapshot folders and the conversation's private ACP profile
+behind. `herdr-review-cleanup` cleans one conversation:
 
 ```sh
-herdr-review-cleanup plan --conversation <uuid>                  # report only
-herdr-review-cleanup sessions --conversation <uuid> --approved   # end dedicated sessions
-herdr-review-cleanup snapshots --conversation <uuid> --yes       # delete snapshot folders
+herdr-review-cleanup plan --conversation <uuid>             # report only
+herdr-review-cleanup snapshots --conversation <uuid> --yes  # delete snapshot and private profile
 ```
 
-- **Sessions** are ended automatically after a final `APPROVED`. Before ending
-  each one the script logs a `session_end` record with a resume command that
-  keeps the original read-only flags (`claude ... --resume <id>` or
-  `codex resume <id> ...`). It only touches sessions named `tstack-review-*` and
-  labelled `tstack.conversation=<uuid>`, never removes a terminal and never
-  touches a reused session. After any other outcome they are kept and the agent
-  asks.
-- **Snapshots** are never deleted automatically. The agent asks and says that
-  deleting a snapshot prevents resuming the reviewers later. Only real folders
-  directly under the review root (`~/.cache/tstack-review/`, or
-  `TSTACK_REVIEW_ROOT`) are removed; symlinks and other paths are skipped.
+- ACP reviewers are child processes, so there is no session to end. Their history lives
+  in the private profile, which is deleted with the snapshot (the credential link inside
+  is removed, never followed).
+- **Snapshots** are never deleted automatically. The agent asks and says that deleting
+  them prevents resuming the reviewers later. Only real folders directly under the review
+  root (`~/.cache/tstack-review/`, or `TSTACK_REVIEW_ROOT`) are removed; symlinks and
+  other paths are skipped.
 - **Review root.** The logger and the cleanup script read `TSTACK_REVIEW_ROOT`. The
   panel cannot see your shell environment, so if you change the root, also pass the
   same path as the panel's `reviewRoot` prop. Otherwise the panel rejects every
   resume record and "Resume session" never appears. Both sides require the session
   folder to be a plain name directly under the root, with symlinks resolved. The
   panel checks that it is a directory when it refreshes and again when you click.
-- **In the panel**, an ended session shows **Resume session** in place of
-  **Open session** while its snapshot folder still exists. It reopens the
-  reviewer in that folder, read-only, with its full history. Once the snapshot is
-  gone the button disappears: resuming elsewhere triggers trust and
-  session-folder dialogs and detaches the reviewer from the files it reviewed. A
-  resumed Claude Code reviewer in plan mode may ask to leave plan mode if told to
-  write; that is a blocking dialog and is never answered for it.
-- Dedicated sessions end with the session that launched them unless started with
-  `--outlive-parent`.
 
 ## Reviewers over ACP
 
@@ -346,53 +293,9 @@ herdr-review-send receive --conversation <uuid> --round 1 --session <address> --
   idle sessions, skips sessions that are not live or are working/blocked (and says
   why), and keeps going if one delivery cannot be logged. `--title` also records the
   space and tab; use it on a task's first message.
-- `receive` takes a reviewer's clean final message from a file (or, with
-  `--from-history`, from the reviewer's own history), reuses the snapshot fields of
+- `receive` takes a reviewer's clean final message from a file, reuses the snapshot fields of
   your request from the log, moves a leading `Summary:` line into the `summary` field
   unchanged, and records your read receipt.
-- `last-reply` prints a reviewer's final message exactly as its harness recorded it
-  (see "Reading a reviewer's reply").
-
-## Reading a reviewer's reply
-
-A terminal screen is a poor source for a reply: if someone scrolled the pane, a
-harness can show its own scrollback (Codex prints "New activity · ↓ Back to bottom ·
-esc") and the reply is not on screen; long lines are also hard-wrapped. So the
-coordinator reads the reply from the reviewer's own history with
-`herdr-review-send last-reply`:
-
-```sh
-herdr-review-send last-reply --conversation <uuid> --round <n> --session <address>
-```
-
-- It prints only the final message of the turn that answered that request, with the
-  original Markdown. Codex marks it `phase: final_answer` and closes the turn with
-  `task_complete`; Claude Code marks it `stop_reason: end_turn`. Commentary written
-  while the reviewer works, tool calls and tool output are never read.
-- It refuses while the reviewer is working or the turn is incomplete, and when more
-  than one history matches. It works for an ended session too.
-- It finds the turn by the header line `Conversation: <uuid>, round <n>` on a line of its
-  own (a mention of an earlier round inside the brief is not a header); `send` adds the
-  header to a request that lacks it and refuses a brief that already names another round.
-  A request whose headers name two rounds is refused.
-- A history is tied to a terminal by folder, conversation and start time (it must have
-  begun after the terminal was created, and before it ended); one that began earlier, or
-  whose start cannot be told, is refused, and so is a choice that an undated candidate
-  could change. Because histories are keyed by folder, it also requires that no other
-  terminal of the same harness, live or ended (`hc ls --all`) and on the same machine, ran
-  in that folder; if one
-  did, `last-reply` refuses and names it, so each reviewer of a harness gets its own folder
-  (one snapshot folder per conversation does). Terminals removed with `hc rm` and agents
-  run outside `hc` are invisible to that check. When the log recorded where the request
-  went, any other session is refused. A session resumed with `--resume` continues an older
-  history, so use `hc read` for it, and for a terminal on another machine (address
-  `machine/t1p`), whose history is not on this computer.
-- A header inside a fenced code block is not a header, and conversation ids are matched
-  without regard to case.
-- After `hc send`, `hc wait` can report `idle` or `done` from before the reviewer
-  started. A reply is ready when `hc get` shows a `turn` greater than the one in the
-  send receipt and a status that is not `working`.
-- Nobody presses keys in a reviewer's session to leave its scrollback view.
 
 ## Message log
 

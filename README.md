@@ -44,7 +44,7 @@ cp -R tstack/skills/* ~/.gemini/antigravity/skills/ # agy
 - `council` and `sol-loop` run their reviewers through `herdr-review-acp`, an
   Agent Client Protocol executor: each reviewer is a child process confirmed to be in its
   native read-only mode, and its review comes back as structured data. Missing members
-  are reported; no model is substituted. Terminal reviewers remain a fallback.
+  are reported; no model is substituted. Terminal reviewers are retired.
 - The OpenCode/Herdr workflows, local message log, native app panel, model
   configuration and install paths are documented in [docs/herdr-workflow.md](docs/herdr-workflow.md).
 

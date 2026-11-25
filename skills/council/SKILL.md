@@ -9,8 +9,7 @@ This is an on-demand, read-only review flow. OpenCode implements and verifies;
 the council only reviews. The members run through the ACP executor
 `herdr-review-acp` (see `herdr-messaging`, "Reviewers over ACP"): each is a child
 process with its own session, not a terminal. Do not use T3 delegates, launch CLI
-one-shots, or substitute another model. Terminal reviewers (`hc run`, `hc send`) are a
-fallback only when the user asks for them.
+one-shots, or substitute another model. Terminal reviewers are retired.
 
 ## Fixed members
 

@@ -8,8 +8,8 @@ description: Use only when the user explicitly invokes sol-loop or asks for an i
 OpenCode implements; the reviewer is Codex GPT-6.1 Sol, run through the ACP
 executor `herdr-review-acp` (see `herdr-messaging`, "Reviewers over ACP"). The
 reviewer is a child process, not a terminal: nothing is typed into a session and no
-screen is read. Never substitute a model. Terminal reviewers (`hc run`, `hc send`)
-are a fallback only when the user asks for them or the executor cannot run.
+screen is read. Never substitute a model. Terminal reviewers are retired: if the
+executor cannot run, report Sol as unavailable.
 
 Keep the change minimal. A review is evidence-driven, not a request to appease a
 model. Do not let findings expand the user's scope.
