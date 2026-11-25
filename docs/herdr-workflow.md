@@ -266,9 +266,10 @@ reproduction or evidence, and the smallest suggested action. The implementer
 checks every finding and records `FIXED`, `DECLINED`, `OPEN` or `NOT_VERIFIED`
 with its own evidence, then re-runs checks after fixes.
 
-Delivery is `hc send`. Keep the receipt `hc` returns (`started`, `status`,
-`turn`). If delivery is uncertain, inspect the same session before resending:
-the text may already have arrived.
+Delivery to a reviewer is `herdr-review-acp review`, which logs the request, the delivery
+and the structured review itself. `hc send` (through `herdr-review-send`) is only for
+messages to sessions that are already running; keep the receipt `hc` returns (`started`,
+`status`, `turn`) and, if delivery is uncertain, inspect the same session before resending.
 
 ## Sending and logging messages
 
@@ -359,11 +360,11 @@ at another file.
   message sits behind "Details".
 - **Summaries.** The optional `summary` field (at most 500 characters, written
   by the sending agent as a short message addressed to the recipients, in the
-  first person) is shown as is. A read-only reviewer
-  cannot write the log, so it opens its final message with a `Summary:` line.
-  The coordinator copies that line verbatim into `summary` and never writes one
-  on the reviewer's behalf; the panel also reads a leading `Summary:` line from
-  the text. Messages without one
+  first person) is shown as is. An ACP reviewer sends its own `summary` in
+  `submit_review`, and the executor logs it unchanged; the coordinator never writes one on
+  the reviewer's behalf. For a message between live sessions, `herdr-review-send receive`
+  moves a leading `Summary:` line into the field, and the panel also reads one from the
+  text. Messages without one
   get a rule-based summary: for reviews, the verdict, a count by severity and the
   top three findings (one line each); for requests, "Review requested", the
   criteria count and the stated intent; otherwise the first sentence. Per-recipient copies sharing a `group_message_id` appear as one bubble.
@@ -386,7 +387,7 @@ at another file.
 - **`herdr-app check` fails:** fix what it reports and run it again.
 - **Layout does not load:** it references other mods by name; make sure each
   one is installed (`herdr-app status` shows errors).
-- **Uncertain delivery (terminal reviewers):** read the target with `hc read` before resending.
+- **Uncertain delivery to a live session (`herdr-review-send`):** read the target with `hc read` before resending.
 - **A reviewer is `unavailable`:** the result's `reason` says why: a missing adapter or
   login, a mode or model the agent would not confirm, or a snapshot that is not
   read-only. `herdr-review-acp agents` and `check` narrow it down.
