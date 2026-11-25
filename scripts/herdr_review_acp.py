@@ -316,7 +316,8 @@ def model_choices(result):
 
 def refuse_linked_path(profile):
     """Unavailable if the profile folder, its conversation folder or `acp-profiles` itself is a symlink: creating
-    the profile would then write wherever the link points."""
+    the profile would then write wherever the link points. The review root above them is the user's own choice
+    (`TSTACK_REVIEW_ROOT`, or `~/.cache` on another disk) and may legitimately be a link, so it is not checked."""
     for folder in (profile, profile.parent, profile.parent.parent):
         if folder.is_symlink():
             raise Unavailable(f"private profile path is a symlink: {folder}")

@@ -620,6 +620,22 @@ class ProfileTests(unittest.TestCase):
                     os.environ.update(old)
                 self.assertEqual(list(outside.iterdir()), [])
 
+    def test_a_review_root_the_user_linked_elsewhere_still_works(self):  # declined: the root is the user's own choice
+        with tempfile.TemporaryDirectory() as temp:
+            real = Path(temp) / "data" / "opencode"
+            real.mkdir(parents=True)
+            (real / "auth.json").write_text("{}")
+            disk = Path(temp) / "other-disk"
+            disk.mkdir()
+            old = self._env(temp)
+            try:
+                (Path(temp) / "root").symlink_to(disk)
+                _, _, profile = acp.launch_spec("opencode", acp.AGENTS["opencode"], CONVERSATION)
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+            self.assertTrue((disk / "acp-profiles" / CONVERSATION / "opencode").is_dir())
+
     def test_broken_credential_link_is_reported(self):
         with tempfile.TemporaryDirectory() as temp:
             profile = Path(temp)
