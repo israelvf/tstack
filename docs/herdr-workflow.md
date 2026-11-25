@@ -497,3 +497,11 @@ The workflow has been used for real reviews. The tests cover the logger, the cle
 messaging scripts and the ACP executor (against a scripted agent); there is no automated
 end-to-end test with the real agents, which `herdr-review-acp check` exercises on demand. Model comparisons are not part of
 the workflow.
+
+## Known gap: OpenCode as an ACP reviewer
+
+`opencode` is defined in the executor but is not a council member. Its private profile links only
+`auth.json`, so providers that come from an account kept in OpenCode's database (such as
+`opencode-go`) are not available to it. Resolve the OpenCode login (for example a provider key in
+`auth.json`, or carrying the account over safely) and pick a model with `TSTACK_OPENCODE_MODEL=provider/model`
+that accepts the `submit_review` tool, then add `opencode` to the council. Until then use Sol, Opus and Neon.
