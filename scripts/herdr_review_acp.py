@@ -314,6 +314,14 @@ def model_choices(result):
     return []
 
 
+def refuse_linked_path(profile):
+    """Unavailable if the profile folder, its conversation folder or `acp-profiles` itself is a symlink: creating
+    the profile would then write wherever the link points."""
+    for folder in (profile, profile.parent, profile.parent.parent):
+        if folder.is_symlink():
+            raise Unavailable(f"private profile path is a symlink: {folder}")
+
+
 def refuse_links(profile, allowed=()):
     """Unavailable if anything inside a private profile is a symlink other than the credential links we make.
     Run before anything is created or removed there, so a planted link can never redirect a write."""
@@ -362,6 +370,7 @@ def launch_spec(agent, spec, conversation="probe", prepare=True):
     harness = spec["harness"]
     if harness == "test":
         return list(spec["command"]), clean_env(spec.get("env", {})), None
+    refuse_linked_path(profiles_dir() / conversation / harness)
     if harness in ("codex", "claude"):
         adapter = adapters_dir() / "node_modules" / ".bin" / ("codex-acp" if harness == "codex" else "claude-agent-acp")
         binary = shutil.which(harness)

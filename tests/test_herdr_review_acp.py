@@ -600,6 +600,26 @@ class ProfileTests(unittest.TestCase):
                 os.environ.clear()
                 os.environ.update(old)
 
+    def test_a_linked_profiles_root_is_refused_and_nothing_is_created_behind_it(self):  # ACP-F3-01, round 2
+        for agent in ("opencode", "neon", "sol", "opus"):
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as temp:
+                real = Path(temp) / "data" / "opencode"
+                real.mkdir(parents=True)
+                (real / "auth.json").write_text("{}")
+                outside = Path(temp) / "outside"
+                outside.mkdir()
+                old = self._env(temp)
+                try:
+                    root = Path(temp) / "root"
+                    root.mkdir()
+                    (root / "acp-profiles").symlink_to(outside)
+                    with self.assertRaises(acp.Unavailable):
+                        acp.launch_spec(agent, acp.AGENTS[agent], CONVERSATION)
+                finally:
+                    os.environ.clear()
+                    os.environ.update(old)
+                self.assertEqual(list(outside.iterdir()), [])
+
     def test_broken_credential_link_is_reported(self):
         with tempfile.TemporaryDirectory() as temp:
             profile = Path(temp)
