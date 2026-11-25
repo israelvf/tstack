@@ -302,6 +302,35 @@ def scrub_profile(profile, harness):
     return removed
 
 
+CREDENTIAL = {"codex": "auth.json", "claude": ".credentials.json", "opencode": "data/opencode/auth.json"}
+
+
+def model_choices(result):
+    """Every value the agent offers for its `model` option."""
+    for option in result.get("configOptions") or []:
+        if option.get("id") == "model":
+            return [item.get("value") for group in option.get("options") or []
+                    for item in (group.get("options") if "options" in group else [group])]
+    return []
+
+
+def opencode_model(available):
+    """OpenCode has no fixed reviewer model: TSTACK_OPENCODE_MODEL (`provider/model`), else the user's most recent
+    model that the private profile can still offer (it has none of the user's own providers)."""
+    chosen = os.environ.get("TSTACK_OPENCODE_MODEL")
+    if chosen:
+        return chosen
+    state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "opencode" / "model.json"
+    try:
+        recent = [f"{m['providerID']}/{m['modelID']}" for m in json.loads(state.read_text())["recent"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        recent = []
+    for name in recent:
+        if name in available:
+            return name
+    raise Unavailable("OpenCode needs a model its private profile offers: set TSTACK_OPENCODE_MODEL=provider/model")
+
+
 def credential_warning(profile, name):
     link = Path(profile) / name
     if profile and not link.is_symlink():
@@ -338,10 +367,42 @@ def launch_spec(agent, spec, conversation="probe", prepare=True):
                 scrub_profile(profile, "claude")
             env = {"CLAUDE_CONFIG_DIR": str(profile), "CLAUDE_CODE_EXECUTABLE": binary}
         return ["node", str(adapter)], clean_env(env), profile
-    command = {"opencode": ["opencode", "acp"], "agy": ["agy", "acp"]}[harness]
-    if not shutil.which(command[0]):
-        raise Unavailable(f"`{command[0]}` is not on PATH")
-    return command, clean_env({}), None
+    if harness == "opencode":
+        if not shutil.which("opencode"):
+            raise Unavailable("`opencode` is not on PATH")
+        profile = profiles_dir() / conversation / "opencode"
+        real = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "opencode"
+        if prepare:
+            for folder in (profile.parent, profile):
+                if folder.is_symlink():
+                    raise Unavailable(f"private profile path is a symlink: {folder}")
+            profile.mkdir(parents=True, exist_ok=True)
+            os.chmod(profile.parent, 0o700)
+            os.chmod(profile, 0o700)
+        link_credential(profile / "data" / "opencode", "auth.json", real, prepare)
+        if prepare:
+            for part in ("config", "state", "cache"):
+                (profile / part).mkdir(parents=True, exist_ok=True)
+            shutil.rmtree(profile / "config", ignore_errors=True)  # no user config, plugins or skills
+            (profile / "config").mkdir()
+        # Its own config, data, state and cache, and nothing from the user's config, Claude files or the project folder.
+        env = {"XDG_CONFIG_HOME": str(profile / "config"), "XDG_DATA_HOME": str(profile / "data"),
+               "XDG_STATE_HOME": str(profile / "state"), "XDG_CACHE_HOME": str(profile / "cache"),
+               "OPENCODE_DISABLE_CLAUDE_CODE": "1", "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+               "OPENCODE_CONFIG_PROJECT_DISABLE": "1", "OPENCODE_DISABLE_AUTOUPDATE": "1"}
+        return ["opencode", "acp"], clean_env(env), profile
+    if not shutil.which("agy"):
+        raise Unavailable("`agy` is not on PATH")
+    profile = profiles_dir() / conversation / "agy"
+    if prepare:
+        for folder in (profile.parent, profile):
+            if folder.is_symlink():
+                raise Unavailable(f"private profile path is a symlink: {folder}")
+        profile.mkdir(parents=True, exist_ok=True)
+        os.chmod(profile.parent, 0o700)
+        os.chmod(profile, 0o700)
+    # Its own settings, skills, MCP servers and history; the login is not linked unless the probe shows it is needed.
+    return ["agy", "acp", "--gemini-dir", str(profile / "gemini")], clean_env({}), profile
 
 
 # ---------------------------------------------------------------- ACP client
@@ -485,6 +546,8 @@ def open_session(client, spec, snapshot, mcp_servers, session_id=None):
     client.events.clear()  # a loaded session replays its history first
     options = option_values(opened["result"])
     desired = {"mode": spec["mode"], **spec["config"]}
+    if spec["harness"] == "opencode" and "model" not in desired:
+        desired["model"] = opencode_model(model_choices(opened["result"]))
     for key, value in desired.items():
         if options.get(key) != value:
             answer = client.request("session/set_config_option", {"sessionId": sid, "configId": key, "value": value}, timeout=30)
@@ -617,8 +680,8 @@ def run_review(agent, snapshot, brief, conversation, round_number, session_id=No
             result["final_text"] = text_of(events)[-300:]
         if recorded and result["status"] != "reviewed":
             result["unaccepted_review"] = recorded  # kept as evidence for a person; never counts as a verdict
-        if profile:
-            warning = credential_warning(profile, "auth.json" if spec["harness"] == "codex" else ".credentials.json")
+        if profile and spec["harness"] in CREDENTIAL:
+            warning = credential_warning(profile, CREDENTIAL[spec["harness"]])
             if warning:
                 result["warnings"].append(warning)
     except Unavailable as problem:

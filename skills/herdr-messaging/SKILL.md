@@ -69,7 +69,8 @@ read-only everywhere and unchanged afterwards; the read-only mode and model must
 confirmed by the agent before any prompt; only reads and its own `submit_review` tool are
 allowed (anything else is rejected, never "always"); Codex and Claude run with a private
 config folder that holds only the login, so your MCP servers, skills and instruction
-files do not reach the reviewer; and the agent's processes are ended afterwards. The
+files do not reach the reviewer (OpenCode and Antigravity get the same: their own
+config, data and state folders); and the agent's processes are ended afterwards. The
 verdict arrives only through `submit_review`; free text is never parsed. A reviewer
 that declines a forbidden probe in `check` is `unexercised`, not `verified`: only a
 permission request that the policy rejected proves the policy.
@@ -87,7 +88,10 @@ therefore not in your normal `~/.codex` or `~/.claude`. The `session_end` record
 executor logs holds a resume command of the form `env CODEX_HOME=<profile> codex resume
 ...` (or `CLAUDE_CONFIG_DIR` for Claude) that keeps the read-only flags; the panel's
 "Resume session" runs only that exact form. Antigravity and OpenCode sessions have no
-resume command, and their config folders are not isolated yet.
+resume command. OpenCode only offers the providers whose key is in its `auth.json`
+(accounts kept in its database are not carried over), so set `TSTACK_OPENCODE_MODEL=provider/model`
+for it; without that it uses your most recent model if the private profile can offer it.
+Antigravity needs no link: its login is not in the config folder.
 
 ## Authorized review sessions (terminal fallback)
 

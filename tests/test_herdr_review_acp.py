@@ -456,6 +456,110 @@ class ProfileTests(unittest.TestCase):
                 os.environ.update(old)
             self.assertIn("npm install", str(caught.exception))
 
+    def _env(self, temp, **extra):
+        fake_bin = Path(temp) / "bin"
+        fake_bin.mkdir(exist_ok=True)
+        for name in ("opencode", "agy"):
+            (fake_bin / name).write_text("")
+            os.chmod(fake_bin / name, 0o755)
+        env = {"TSTACK_REVIEW_ROOT": str(Path(temp) / "root"), "PATH": f"{fake_bin}:{os.environ['PATH']}", "OPENAI_API_KEY": "secret",
+               "XDG_DATA_HOME": str(Path(temp) / "data"), "XDG_STATE_HOME": str(Path(temp) / "state"), **extra}
+        old = dict(os.environ)
+        os.environ.update(env)
+        return old
+
+    def test_opencode_gets_its_own_xdg_folders_and_only_its_credential(self):
+        with tempfile.TemporaryDirectory() as temp:
+            real = Path(temp) / "data" / "opencode"
+            real.mkdir(parents=True)
+            (real / "auth.json").write_text("{}")
+            (real / "opencode.db").write_text("history")
+            old = self._env(temp)
+            try:
+                command, child_env, profile = acp.launch_spec("opencode", acp.AGENTS["opencode"], CONVERSATION)
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+            self.assertEqual(command, ["opencode", "acp"])
+            link = profile / "data" / "opencode" / "auth.json"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(sorted(p.name for p in (profile / "data" / "opencode").iterdir()), ["auth.json"])
+            for part in ("CONFIG", "DATA", "STATE", "CACHE"):
+                self.assertTrue(child_env[f"XDG_{part}_HOME"].startswith(str(profile)))
+            self.assertEqual(child_env["OPENCODE_DISABLE_PROJECT_CONFIG"], "1")
+            self.assertEqual(child_env["OPENCODE_DISABLE_CLAUDE_CODE"], "1")
+            self.assertNotIn("OPENAI_API_KEY", child_env)
+            self.assertEqual(oct(profile.stat().st_mode & 0o777), "0o700")
+
+    def test_opencode_config_is_emptied_on_every_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            real = Path(temp) / "data" / "opencode"
+            real.mkdir(parents=True)
+            (real / "auth.json").write_text("{}")
+            old = self._env(temp)
+            try:
+                _, _, profile = acp.launch_spec("opencode", acp.AGENTS["opencode"], CONVERSATION)
+                (profile / "config" / "opencode.jsonc").write_text("{}")
+                acp.launch_spec("opencode", acp.AGENTS["opencode"], CONVERSATION)
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+            self.assertEqual(list((profile / "config").iterdir()), [])
+
+    def test_opencode_without_a_login_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old = self._env(temp)
+            try:
+                with self.assertRaises(acp.Unavailable):
+                    acp.launch_spec("opencode", acp.AGENTS["opencode"], CONVERSATION)
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+
+    def test_opencode_model_comes_from_the_environment_or_a_recent_model_it_can_offer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp) / "state" / "opencode"
+            state.mkdir(parents=True)
+            (state / "model.json").write_text(json.dumps({"recent": [{"providerID": "gone", "modelID": "x"}, {"providerID": "p", "modelID": "m"}]}))
+            old = self._env(temp)
+            try:
+                self.assertEqual(acp.opencode_model(["p/m", "q/n"]), "p/m")
+                with self.assertRaises(acp.Unavailable):
+                    acp.opencode_model(["q/n"])
+                os.environ["TSTACK_OPENCODE_MODEL"] = "q/n"
+                self.assertEqual(acp.opencode_model([]), "q/n")
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+
+    def test_antigravity_uses_a_private_gemini_folder_and_links_nothing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old = self._env(temp)
+            try:
+                command, child_env, profile = acp.launch_spec("neon", acp.AGENTS["neon"], CONVERSATION)
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+            self.assertEqual(command[:4], ["agy", "acp", "--gemini-dir", str(profile / "gemini")])
+            self.assertEqual(list(profile.iterdir()), [])
+            self.assertEqual(oct(profile.stat().st_mode & 0o777), "0o700")
+            self.assertNotIn("OPENAI_API_KEY", child_env)
+
+    def test_antigravity_refuses_a_symlinked_profile(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old = self._env(temp)
+            try:
+                folder = Path(temp) / "root" / "acp-profiles" / CONVERSATION
+                folder.mkdir(parents=True)
+                other = Path(temp) / "elsewhere"
+                other.mkdir()
+                (folder / "agy").symlink_to(other)
+                with self.assertRaises(acp.Unavailable):
+                    acp.launch_spec("neon", acp.AGENTS["neon"], CONVERSATION)
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+
     def test_broken_credential_link_is_reported(self):
         with tempfile.TemporaryDirectory() as temp:
             profile = Path(temp)
