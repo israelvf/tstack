@@ -560,6 +560,46 @@ class ProfileTests(unittest.TestCase):
                 os.environ.clear()
                 os.environ.update(old)
 
+    def test_links_inside_a_private_profile_are_refused_before_anything_is_written(self):  # ACP-F3-01
+        for harness, agent, names in (("opencode", "opencode", ["state", "cache", "config", "data"]), ("agy", "neon", ["gemini"])):
+            for name in names:
+                with self.subTest(harness=harness, name=name), tempfile.TemporaryDirectory() as temp:
+                    real = Path(temp) / "data" / "opencode"
+                    real.mkdir(parents=True)
+                    (real / "auth.json").write_text("{}")
+                    outside = Path(temp) / "outside"
+                    (outside / "opencode").mkdir(parents=True)
+                    (outside / "keep.txt").write_text("mine")
+                    old = self._env(temp)
+                    try:
+                        profile = Path(temp) / "root" / "acp-profiles" / CONVERSATION / harness
+                        profile.mkdir(parents=True)
+                        (profile / name).symlink_to(outside)
+                        with self.assertRaises(acp.Unavailable) as caught:
+                            acp.launch_spec(agent, acp.AGENTS[agent], CONVERSATION)
+                    finally:
+                        os.environ.clear()
+                        os.environ.update(old)
+                    self.assertIn("symlink", str(caught.exception))
+                    self.assertEqual(sorted(p.name for p in outside.iterdir()), ["keep.txt", "opencode"])
+                    self.assertEqual(list((outside / "opencode").iterdir()), [])
+
+    def test_a_link_deeper_in_the_profile_is_refused_but_our_credential_link_is_not(self):
+        with tempfile.TemporaryDirectory() as temp:
+            real = Path(temp) / "data" / "opencode"
+            real.mkdir(parents=True)
+            (real / "auth.json").write_text("{}")
+            old = self._env(temp)
+            try:
+                _, _, profile = acp.launch_spec("opencode", acp.AGENTS["opencode"], CONVERSATION)
+                acp.launch_spec("opencode", acp.AGENTS["opencode"], CONVERSATION)  # the credential link alone is fine
+                (profile / "state" / "opencode").symlink_to(temp)
+                with self.assertRaises(acp.Unavailable):
+                    acp.launch_spec("opencode", acp.AGENTS["opencode"], CONVERSATION)
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+
     def test_broken_credential_link_is_reported(self):
         with tempfile.TemporaryDirectory() as temp:
             profile = Path(temp)

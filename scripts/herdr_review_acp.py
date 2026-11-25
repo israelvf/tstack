@@ -314,6 +314,22 @@ def model_choices(result):
     return []
 
 
+def refuse_links(profile, allowed=()):
+    """Unavailable if anything inside a private profile is a symlink other than the credential links we make.
+    Run before anything is created or removed there, so a planted link can never redirect a write."""
+    profile = Path(profile)
+    if not profile.exists():
+        return
+    try:
+        for folder, names, files in os.walk(profile, followlinks=False, onerror=scan_error):
+            for name in names + files:
+                path = Path(folder) / name
+                if path.is_symlink() and str(path.relative_to(profile)) not in allowed:
+                    raise Unavailable(f"private profile contains a symlink: {path}")
+    except OSError as problem:
+        raise Unavailable(f"cannot inspect the private profile: {problem}")
+
+
 def opencode_model(available):
     """OpenCode has no fixed reviewer model: TSTACK_OPENCODE_MODEL (`provider/model`), else the user's most recent
     model that the private profile can still offer (it has none of the user's own providers)."""
@@ -372,10 +388,11 @@ def launch_spec(agent, spec, conversation="probe", prepare=True):
             raise Unavailable("`opencode` is not on PATH")
         profile = profiles_dir() / conversation / "opencode"
         real = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "opencode"
+        for folder in (profile.parent, profile):
+            if folder.is_symlink():
+                raise Unavailable(f"private profile path is a symlink: {folder}")
+        refuse_links(profile, {CREDENTIAL["opencode"]})
         if prepare:
-            for folder in (profile.parent, profile):
-                if folder.is_symlink():
-                    raise Unavailable(f"private profile path is a symlink: {folder}")
             profile.mkdir(parents=True, exist_ok=True)
             os.chmod(profile.parent, 0o700)
             os.chmod(profile, 0o700)
@@ -394,10 +411,11 @@ def launch_spec(agent, spec, conversation="probe", prepare=True):
     if not shutil.which("agy"):
         raise Unavailable("`agy` is not on PATH")
     profile = profiles_dir() / conversation / "agy"
+    for folder in (profile.parent, profile):
+        if folder.is_symlink():
+            raise Unavailable(f"private profile path is a symlink: {folder}")
+    refuse_links(profile)
     if prepare:
-        for folder in (profile.parent, profile):
-            if folder.is_symlink():
-                raise Unavailable(f"private profile path is a symlink: {folder}")
         profile.mkdir(parents=True, exist_ok=True)
         os.chmod(profile.parent, 0o700)
         os.chmod(profile, 0o700)
